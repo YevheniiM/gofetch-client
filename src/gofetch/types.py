@@ -101,10 +101,10 @@ class ResultsResponse(BaseModel):
     job_id: str
     status: str
     scraper_type: str
-    items: list[dict[str, Any]]
-    total: int
-    offset: int
-    limit: int
+    results: list[dict[str, Any]]
+    total: int | None = None
+    offset: int | None = None
+    limit: int | None = None
 
     model_config = {"extra": "allow"}
 

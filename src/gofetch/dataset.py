@@ -92,7 +92,7 @@ class DatasetClient:
                 },
             )
 
-            items = response.get("items", [])
+            items = response.get("results", response.get("items", []))
             if not items:
                 break
 
@@ -235,7 +235,7 @@ class AsyncDatasetClient:
                 },
             )
 
-            items = response.get("items", [])
+            items = response.get("results", response.get("items", []))
             if not items:
                 break
 
