@@ -7,11 +7,20 @@ Designed as a drop-in replacement for ApifyClient.
 
 from __future__ import annotations
 
+from typing import NoReturn
+
 from gofetch.actor import ActorClient, AsyncActorClient
 from gofetch.constants import DEFAULT_BASE_URL, DEFAULT_TIMEOUT
 from gofetch.dataset import AsyncDatasetClient, DatasetClient
 from gofetch.http import AsyncHTTPClient, HTTPClient
+from gofetch.run import AsyncRunClient, RunClient
 from gofetch.types import resolve_actor_url
+from gofetch.webhook_client import (
+    AsyncWebhookClient,
+    AsyncWebhookCollectionClient,
+    WebhookClient,
+    WebhookCollectionClient,
+)
 
 
 class GoFetchClient:
@@ -117,6 +126,9 @@ class GoFetchClient:
         Returns:
             ActorClient instance for the specified scraper
 
+        Raises:
+            ValueError: If actor_url is empty
+
         Example:
             # Using Apify URL (for compatibility)
             actor = client.actor("apify/instagram-scraper")
@@ -124,6 +136,8 @@ class GoFetchClient:
             # Using GoFetch type directly
             actor = client.actor("instagram")
         """
+        if not actor_url:
+            raise ValueError("actor_id must not be empty")
         scraper_type = resolve_actor_url(actor_url)
         return ActorClient(
             http=self._http,
@@ -149,6 +163,30 @@ class GoFetchClient:
         return DatasetClient(
             http=self._http,
             job_id=dataset_id,
+        )
+
+    def run(self, run_id: str) -> RunClient:
+        """Get a run client for a specific job."""
+        return RunClient(http=self._http, run_id=run_id)
+
+    def webhook(self, webhook_id: str) -> WebhookClient:
+        """Get a webhook client for a specific webhook."""
+        return WebhookClient(http=self._http, webhook_id=webhook_id)
+
+    def webhooks(self) -> WebhookCollectionClient:
+        """Get webhook collection client for listing/creating webhooks."""
+        return WebhookCollectionClient(http=self._http)
+
+    def key_value_store(self, store_id: str) -> NoReturn:
+        """Not supported in GoFetch.
+
+        Apify's key-value store has no GoFetch equivalent.
+        """
+        raise NotImplementedError(
+            f"GoFetch does not have a key-value store. "
+            f"key_value_store('{store_id}') cannot be used. "
+            f"Media uploaded by GoFetch scrapers is accessible via direct URLs "
+            f"and does not require manual cleanup."
         )
 
     def close(self) -> None:
@@ -214,6 +252,8 @@ class AsyncGoFetchClient:
 
     def actor(self, actor_url: str) -> AsyncActorClient:
         """Get an async actor client for a specific scraper."""
+        if not actor_url:
+            raise ValueError("actor_id must not be empty")
         scraper_type = resolve_actor_url(actor_url)
         return AsyncActorClient(
             http=self._http,
@@ -225,6 +265,27 @@ class AsyncGoFetchClient:
         return AsyncDatasetClient(
             http=self._http,
             job_id=dataset_id,
+        )
+
+    def run(self, run_id: str) -> AsyncRunClient:
+        """Get an async run client for a specific job."""
+        return AsyncRunClient(http=self._http, run_id=run_id)
+
+    def webhook(self, webhook_id: str) -> AsyncWebhookClient:
+        """Get an async webhook client for a specific webhook."""
+        return AsyncWebhookClient(http=self._http, webhook_id=webhook_id)
+
+    def webhooks(self) -> AsyncWebhookCollectionClient:
+        """Get async webhook collection client for listing/creating webhooks."""
+        return AsyncWebhookCollectionClient(http=self._http)
+
+    def key_value_store(self, store_id: str) -> NoReturn:
+        """Not supported in GoFetch."""
+        raise NotImplementedError(
+            f"GoFetch does not have a key-value store. "
+            f"key_value_store('{store_id}') cannot be used. "
+            f"Media uploaded by GoFetch scrapers is accessible via direct URLs "
+            f"and does not require manual cleanup."
         )
 
     async def close(self) -> None:

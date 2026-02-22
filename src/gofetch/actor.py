@@ -6,7 +6,9 @@ Provides Apify-compatible interface for running scraper jobs.
 
 from __future__ import annotations
 
+import logging
 import time
+import warnings
 from typing import TYPE_CHECKING, Any
 
 from gofetch.constants import (
@@ -15,10 +17,79 @@ from gofetch.constants import (
     MAX_POLL_INTERVAL,
     POLL_BACKOFF_FACTOR,
 )
-from gofetch.exceptions import JobError, TimeoutError
+from gofetch.webhook import APIFY_TO_GOFETCH_EVENTS
 
 if TYPE_CHECKING:
     from gofetch.http import AsyncHTTPClient, HTTPClient
+
+logger = logging.getLogger(__name__)
+
+TERMINAL_STATUSES = frozenset({"completed", "failed", "timed_out", "cancelled"})
+
+
+def _is_terminal(status: str) -> bool:
+    return status in TERMINAL_STATUSES
+
+
+def _next_poll_interval(current: float) -> float:
+    return min(current * POLL_BACKOFF_FACTOR, MAX_POLL_INTERVAL)
+
+
+def _format_job_as_apify_run(
+    job: dict[str, Any],
+    scraper_type: str | None = None,
+    extra_fields: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Convert GoFetch job dict to Apify run format.
+
+    IMPORTANT: Any extra fields on the job dict (e.g., scraper_metadata)
+    are preserved on the returned run dict.
+    """
+    scraper_type = scraper_type or job.get("scraper_type", "unknown")
+    status = GOFETCH_TO_APIFY_STATUS.get(job.get("status", ""), "RUNNING")
+
+    run: dict[str, Any] = {
+        "id": job["id"],
+        "actId": f"gofetch/{scraper_type}",
+        "status": status,
+        "defaultDatasetId": job["id"],
+        "startedAt": job.get("started_at"),
+        "finishedAt": job.get("completed_at"),
+        "buildId": None,
+        "buildNumber": None,
+        "exitCode": 0 if status == "SUCCEEDED" else None,
+        "defaultKeyValueStoreId": None,
+        "defaultRequestQueueId": None,
+        "_gofetch_job": job,
+    }
+    if extra_fields:
+        run.update(extra_fields)
+    return run
+
+
+def _translate_webhooks(webhooks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Translate Apify-format webhooks to GoFetch format.
+
+    Apify format:
+        {"request_url": "https://...", "event_types": ["ACTOR.RUN.SUCCEEDED"]}
+    or camelCase:
+        {"requestUrl": "https://...", "eventTypes": ["ACTOR.RUN.SUCCEEDED"]}
+
+    GoFetch format:
+        {"url": "https://...", "events": ["job.completed"]}
+    """
+    translated = []
+    for wh in webhooks:
+        url = wh.get("request_url") or wh.get("requestUrl")
+        event_types = wh.get("event_types") or wh.get("eventTypes", [])
+        translated.append({
+            "url": url,
+            "events": [
+                APIFY_TO_GOFETCH_EVENTS.get(et, et)
+                for et in event_types
+            ],
+        })
+    return translated
 
 
 class ActorClient:
@@ -28,16 +99,6 @@ class ActorClient:
     Provides the same methods as Apify's ActorClient:
     - call() for synchronous execution
     - start() for asynchronous execution with webhooks
-
-    Usage:
-        client = GoFetchClient(api_key="...")
-        actor = client.actor("instagram")
-
-        # Sync execution (blocks until complete)
-        run = actor.call(run_input={"directUrls": [...]})
-
-        # Async execution (returns immediately)
-        run = actor.start(run_input={...}, webhooks=[...])
     """
 
     def __init__(
@@ -45,318 +106,207 @@ class ActorClient:
         http: HTTPClient,
         scraper_type: str,
     ) -> None:
-        """
-        Initialize actor client.
-
-        Args:
-            http: HTTP client for API requests
-            scraper_type: GoFetch scraper type (e.g., "instagram", "tiktok")
-        """
         self._http = http
         self._scraper_type = scraper_type
 
     def call(
         self,
         run_input: dict[str, Any],
-        timeout_secs: int = 3600,
-        memory_mbytes: int | None = None,  # Ignored, for Apify compatibility
-        build: str | None = None,  # Ignored, for Apify compatibility
+        *,
+        wait_secs: int | None = None,
+        timeout_secs: int | None = None,
+        memory_mbytes: int | None = None,
+        build: str | None = None,
+        webhooks: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """
-        Run actor synchronously (blocking).
+        """Run actor synchronously (blocking).
 
-        Equivalent to Apify's actor.call() - blocks until job completes.
+        Matches Apify's behavioral contract:
+        - Returns run dict regardless of final status (never raises on failure/timeout)
+        - On timeout, returns the current run state (status may be "RUNNING")
+        - Default wait_secs=None means wait indefinitely
 
         Args:
             run_input: Scraper configuration parameters
-            timeout_secs: Maximum wait time in seconds (default 1 hour)
+            wait_secs: Maximum wait time in seconds (None = indefinite)
+            timeout_secs: Deprecated alias for wait_secs
             memory_mbytes: Ignored (Apify compatibility)
             build: Ignored (Apify compatibility)
+            webhooks: Per-run webhooks to register
 
         Returns:
-            Dict in Apify run format with keys:
-            - id: Run/job ID
-            - actId: Actor ID (e.g., "gofetch/instagram")
-            - status: "SUCCEEDED", "FAILED", etc.
-            - defaultDatasetId: Dataset ID for fetching results
-            - startedAt: Start timestamp
-            - finishedAt: Finish timestamp
-            - _gofetch_job: Original GoFetch job data
-
-        Raises:
-            TimeoutError: If job doesn't complete within timeout_secs
-            JobError: If job fails
+            Dict in Apify run format
         """
-        _ = memory_mbytes, build  # Unused, for Apify compatibility
+        _ = memory_mbytes, build
 
-        # 1. Create job
-        job = self._create_job(run_input)
+        effective_wait = self._resolve_wait_secs(wait_secs, timeout_secs)
+
+        job = self._create_job(run_input, webhooks=webhooks)
         job_id = job["id"]
 
-        # 2. Poll until complete
-        job = self._wait_for_completion(job_id, timeout_secs)
-
-        # 3. Check for failure
-        if job["status"] == "failed":
-            raise JobError(
-                message="Job failed",
-                job_id=job_id,
-                status=job["status"],
-                error_message=job.get("error_message"),
-            )
-
-        # 4. Return in Apify format
-        return self._format_as_apify_run(job)
+        return self._wait_for_completion(job_id, effective_wait)
 
     def start(
         self,
         run_input: dict[str, Any],
+        *,
         webhooks: list[dict[str, Any]] | None = None,
-        memory_mbytes: int | None = None,  # Ignored
-        build: str | None = None,  # Ignored
+        wait_secs: int | None = None,
+        timeout_secs: int | None = None,
+        memory_mbytes: int | None = None,
+        build: str | None = None,
     ) -> dict[str, Any]:
+        """Start actor asynchronously (non-blocking).
+
+        Returns immediately after creating the job.
         """
-        Start actor asynchronously (non-blocking).
+        _ = wait_secs, timeout_secs, memory_mbytes, build
 
-        Equivalent to Apify's actor.start() - returns immediately.
-        Use webhooks to get notified when the job completes.
+        job = self._create_job(run_input, webhooks=webhooks)
+        return _format_job_as_apify_run(job, scraper_type=self._scraper_type)
 
-        Args:
-            run_input: Scraper configuration parameters
-            webhooks: List of webhook configurations. Each webhook should have:
-                - request_url: URL to POST to
-                - event_types: List of event types (e.g., ["ACTOR.RUN.SUCCEEDED"])
-            memory_mbytes: Ignored (Apify compatibility)
-            build: Ignored (Apify compatibility)
-
-        Returns:
-            Dict in Apify run format with status "RUNNING" or "READY"
-        """
-        _ = webhooks, memory_mbytes, build  # Unused, for Apify compatibility
-
-        # Create job (don't wait)
-        job = self._create_job(run_input)
-
-        # Return in Apify format
-        return self._format_as_apify_run(job)
-
-    def _create_job(self, run_input: dict[str, Any]) -> dict[str, Any]:
-        """
-        Create a scraper job via GoFetch API.
-
-        Args:
-            run_input: Scraper configuration parameters
-
-        Returns:
-            Job response from API
-        """
-        # Transform input if needed (most fields are 1:1)
+    def _create_job(
+        self,
+        run_input: dict[str, Any],
+        webhooks: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         config = self._transform_input(run_input)
+        payload: dict[str, Any] = {
+            "scraper_type": self._scraper_type,
+            "config": config,
+        }
+        if webhooks:
+            payload["webhooks"] = _translate_webhooks(webhooks)
 
-        response = self._http.post(
-            "/api/v1/jobs/create/",
-            json={
-                "scraper_type": self._scraper_type,
-                "config": config,
-            },
-        )
-        return response
+        return self._http.post("/api/v1/jobs/create/", json=payload)
 
     def _transform_input(self, run_input: dict[str, Any]) -> dict[str, Any]:
-        """
-        Transform Apify-style input to GoFetch format.
-
-        Most parameters are the same between Apify and GoFetch,
-        but we can add transformations here as needed.
-
-        Args:
-            run_input: Apify-style input parameters
-
-        Returns:
-            GoFetch-compatible config
-        """
-        # Currently 1:1, but can add transformations
         return run_input.copy()
 
     def _wait_for_completion(
         self,
         job_id: str,
-        timeout_secs: int,
+        wait_secs: int | None,
     ) -> dict[str, Any]:
+        """Poll job status until terminal or timeout.
+
+        Returns Apify-format run dict in all cases (never raises).
+        On timeout, returns current run state. On 404, returns minimal dict.
         """
-        Poll job status until complete or timeout.
-
-        Uses exponential backoff starting at 2 seconds, up to 30 seconds.
-
-        Args:
-            job_id: Job ID to poll
-            timeout_secs: Maximum wait time
-
-        Returns:
-            Final job data
-
-        Raises:
-            TimeoutError: If timeout exceeded
-        """
-        start_time = time.time()
+        start_time = time.monotonic()
         poll_interval = DEFAULT_POLL_INTERVAL
 
-        while time.time() - start_time < timeout_secs:
+        while True:
             job = self._http.get(f"/api/v1/jobs/{job_id}/")
 
-            if job["status"] in ("completed", "failed", "cancelled"):
-                return job
+            if _is_terminal(job.get("status", "")):
+                return _format_job_as_apify_run(job, scraper_type=self._scraper_type)
 
-            # Wait before next poll
+            if wait_secs is not None and (time.monotonic() - start_time) >= wait_secs:
+                return _format_job_as_apify_run(job, scraper_type=self._scraper_type)
+
             time.sleep(poll_interval)
+            poll_interval = _next_poll_interval(poll_interval)
 
-            # Exponential backoff
-            poll_interval = min(poll_interval * POLL_BACKOFF_FACTOR, MAX_POLL_INTERVAL)
-
-        raise TimeoutError(
-            message=f"Job did not complete within {timeout_secs} seconds",
-            job_id=job_id,
-            timeout_seconds=timeout_secs,
-        )
-
-    def _format_as_apify_run(self, job: dict[str, Any]) -> dict[str, Any]:
-        """
-        Convert GoFetch job to Apify run format.
-
-        Args:
-            job: GoFetch job data
-
-        Returns:
-            Dict matching Apify run format
-        """
-        status = GOFETCH_TO_APIFY_STATUS.get(job["status"], "RUNNING")
-
-        return {
-            "id": job["id"],
-            "actId": f"gofetch/{self._scraper_type}",
-            "status": status,
-            "defaultDatasetId": job["id"],  # In GoFetch, job_id == dataset_id
-            "startedAt": job.get("started_at"),
-            "finishedAt": job.get("completed_at"),
-            # Apify compat fields (placeholders)
-            "buildId": None,
-            "buildNumber": None,
-            "exitCode": 0 if status == "SUCCEEDED" else None,
-            "defaultKeyValueStoreId": None,
-            "defaultRequestQueueId": None,
-            # Original job data for reference
-            "_gofetch_job": job,
-        }
+    @staticmethod
+    def _resolve_wait_secs(
+        wait_secs: int | None,
+        timeout_secs: int | None,
+    ) -> int | None:
+        if timeout_secs is not None and wait_secs is None:
+            warnings.warn(
+                "timeout_secs is deprecated, use wait_secs instead",
+                DeprecationWarning,
+                stacklevel=3,
+            )
+            return timeout_secs
+        return wait_secs
 
 
 class AsyncActorClient:
-    """
-    Async actor client for GoFetch API.
-
-    Same interface as ActorClient but uses async/await.
-    """
+    """Async actor client for GoFetch API."""
 
     def __init__(
         self,
         http: AsyncHTTPClient,
         scraper_type: str,
     ) -> None:
-        """Initialize async actor client."""
         self._http = http
         self._scraper_type = scraper_type
 
     async def call(
         self,
         run_input: dict[str, Any],
-        timeout_secs: int = 3600,
+        *,
+        wait_secs: int | None = None,
+        timeout_secs: int | None = None,
         memory_mbytes: int | None = None,
         build: str | None = None,
+        webhooks: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """Run actor synchronously (blocking)."""
-        _ = memory_mbytes, build  # Unused
+        """Run actor synchronously (blocking). Async version."""
+        _ = memory_mbytes, build
 
-        job = await self._create_job(run_input)
+        effective_wait = ActorClient._resolve_wait_secs(wait_secs, timeout_secs)
+
+        job = await self._create_job(run_input, webhooks=webhooks)
         job_id = job["id"]
 
-        job = await self._wait_for_completion(job_id, timeout_secs)
-
-        if job["status"] == "failed":
-            raise JobError(
-                message="Job failed",
-                job_id=job_id,
-                status=job["status"],
-                error_message=job.get("error_message"),
-            )
-
-        return self._format_as_apify_run(job)
+        return await self._wait_for_completion(job_id, effective_wait)
 
     async def start(
         self,
         run_input: dict[str, Any],
+        *,
         webhooks: list[dict[str, Any]] | None = None,
+        wait_secs: int | None = None,
+        timeout_secs: int | None = None,
         memory_mbytes: int | None = None,
         build: str | None = None,
     ) -> dict[str, Any]:
-        """Start actor asynchronously (non-blocking)."""
-        _ = webhooks, memory_mbytes, build  # Unused
+        """Start actor asynchronously (non-blocking). Async version."""
+        _ = wait_secs, timeout_secs, memory_mbytes, build
 
-        job = await self._create_job(run_input)
-        return self._format_as_apify_run(job)
+        job = await self._create_job(run_input, webhooks=webhooks)
+        return _format_job_as_apify_run(job, scraper_type=self._scraper_type)
 
-    async def _create_job(self, run_input: dict[str, Any]) -> dict[str, Any]:
-        """Create a scraper job via GoFetch API."""
-        config = run_input.copy()
+    async def _create_job(
+        self,
+        run_input: dict[str, Any],
+        webhooks: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        config = self._transform_input(run_input)
+        payload: dict[str, Any] = {
+            "scraper_type": self._scraper_type,
+            "config": config,
+        }
+        if webhooks:
+            payload["webhooks"] = _translate_webhooks(webhooks)
 
-        response = await self._http.post(
-            "/api/v1/jobs/create/",
-            json={
-                "scraper_type": self._scraper_type,
-                "config": config,
-            },
-        )
-        return response
+        return await self._http.post("/api/v1/jobs/create/", json=payload)
+
+    def _transform_input(self, run_input: dict[str, Any]) -> dict[str, Any]:
+        return run_input.copy()
 
     async def _wait_for_completion(
         self,
         job_id: str,
-        timeout_secs: int,
+        wait_secs: int | None,
     ) -> dict[str, Any]:
-        """Poll job status until complete or timeout."""
+        """Poll job status until terminal or timeout. Async version."""
         import asyncio
 
-        start_time = time.time()
+        start_time = time.monotonic()
         poll_interval = DEFAULT_POLL_INTERVAL
 
-        while time.time() - start_time < timeout_secs:
+        while True:
             job = await self._http.get(f"/api/v1/jobs/{job_id}/")
 
-            if job["status"] in ("completed", "failed", "cancelled"):
-                return job
+            if _is_terminal(job.get("status", "")):
+                return _format_job_as_apify_run(job, scraper_type=self._scraper_type)
+
+            if wait_secs is not None and (time.monotonic() - start_time) >= wait_secs:
+                return _format_job_as_apify_run(job, scraper_type=self._scraper_type)
 
             await asyncio.sleep(poll_interval)
-            poll_interval = min(poll_interval * POLL_BACKOFF_FACTOR, MAX_POLL_INTERVAL)
-
-        raise TimeoutError(
-            message=f"Job did not complete within {timeout_secs} seconds",
-            job_id=job_id,
-            timeout_seconds=timeout_secs,
-        )
-
-    def _format_as_apify_run(self, job: dict[str, Any]) -> dict[str, Any]:
-        """Convert GoFetch job to Apify run format."""
-        status = GOFETCH_TO_APIFY_STATUS.get(job["status"], "RUNNING")
-
-        return {
-            "id": job["id"],
-            "actId": f"gofetch/{self._scraper_type}",
-            "status": status,
-            "defaultDatasetId": job["id"],
-            "startedAt": job.get("started_at"),
-            "finishedAt": job.get("completed_at"),
-            "buildId": None,
-            "buildNumber": None,
-            "exitCode": 0 if status == "SUCCEEDED" else None,
-            "defaultKeyValueStoreId": None,
-            "defaultRequestQueueId": None,
-            "_gofetch_job": job,
-        }
+            poll_interval = _next_poll_interval(poll_interval)

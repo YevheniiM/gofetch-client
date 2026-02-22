@@ -38,6 +38,7 @@ class JobStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    TIMED_OUT = "timed_out"
 
     def to_apify_status(self) -> str:
         """Convert to Apify-compatible status string."""
@@ -47,6 +48,7 @@ class JobStatus(str, Enum):
             "completed": "SUCCEEDED",
             "failed": "FAILED",
             "cancelled": "ABORTED",
+            "timed_out": "TIMED-OUT",
         }
         return status_map.get(self.value, "RUNNING")
 

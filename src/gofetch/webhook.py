@@ -42,6 +42,7 @@ class WebhookEventType(str, Enum):
     JOB_PROGRESS = "job.progress"
     JOB_COMPLETED = "job.completed"
     JOB_FAILED = "job.failed"
+    JOB_TIMED_OUT = "job.timed_out"
     JOB_CANCELLED = "job.cancelled"
 
 
@@ -52,10 +53,21 @@ GOFETCH_TO_APIFY_EVENTS: dict[str, str] = {
     "job.progress": "ACTOR.RUN.RUNNING",
     "job.completed": "ACTOR.RUN.SUCCEEDED",
     "job.failed": "ACTOR.RUN.FAILED",
+    "job.timed_out": "ACTOR.RUN.TIMED_OUT",
     "job.cancelled": "ACTOR.RUN.ABORTED",
 }
 
-APIFY_TO_GOFETCH_EVENTS: dict[str, str] = {v: k for k, v in GOFETCH_TO_APIFY_EVENTS.items()}
+# Manually defined reverse mapping (NOT auto-generated) because
+# job.started and job.progress both map to ACTOR.RUN.RUNNING —
+# auto-reversing would lose one of them.
+APIFY_TO_GOFETCH_EVENTS: dict[str, str] = {
+    "ACTOR.RUN.CREATED": "job.created",
+    "ACTOR.RUN.RUNNING": "job.started",
+    "ACTOR.RUN.SUCCEEDED": "job.completed",
+    "ACTOR.RUN.FAILED": "job.failed",
+    "ACTOR.RUN.TIMED_OUT": "job.timed_out",
+    "ACTOR.RUN.ABORTED": "job.cancelled",
+}
 
 
 def verify_webhook_signature(
@@ -168,6 +180,7 @@ def transform_webhook_payload(gofetch_payload: dict[str, Any]) -> dict[str, Any]
         "running": "RUNNING",
         "completed": "SUCCEEDED",
         "failed": "FAILED",
+        "timed_out": "TIMED-OUT",
         "cancelled": "ABORTED",
     }
     status = status_map.get(data.get("status", ""), data.get("status", "RUNNING"))

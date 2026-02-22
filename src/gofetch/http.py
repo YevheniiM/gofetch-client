@@ -23,12 +23,43 @@ from gofetch.constants import (
     DEFAULT_RETRY_DELAY,
     DEFAULT_TIMEOUT,
     RETRY_BACKOFF_FACTOR,
+    RETRYABLE_STATUS_CODES,
 )
 from gofetch.exceptions import (
     APIError,
     AuthenticationError,
     RateLimitError,
 )
+
+
+def _handle_error_response(response: httpx.Response) -> None:
+    """Parse error response and raise appropriate exception."""
+    try:
+        error_data = response.json()
+    except Exception:
+        error_data = {"message": response.text or "Unknown error"}
+
+    error_message = error_data.get("message", error_data.get("error", "Unknown error"))
+    error_code = error_data.get("error")
+    details = error_data.get("details", {})
+
+    if response.status_code == 401:
+        raise AuthenticationError(message=error_message, details=details)
+
+    if response.status_code == 429:
+        retry_after = None
+        if "Retry-After" in response.headers:
+            with contextlib.suppress(ValueError):
+                retry_after = int(response.headers["Retry-After"])
+        retry_after = retry_after or error_data.get("retry_after")
+        raise RateLimitError(message=error_message, retry_after=retry_after, details=details)
+
+    raise APIError(
+        message=error_message,
+        status_code=response.status_code,
+        error_code=error_code,
+        details=details,
+    )
 
 
 class HTTPClient:
@@ -67,11 +98,13 @@ class HTTPClient:
 
     def _default_headers(self) -> dict[str, str]:
         """Get default headers for all requests."""
+        from gofetch import __version__
+
         return {
             API_KEY_HEADER: self._api_key,
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "gofetch-client/0.1.0",
+            "User-Agent": f"gofetch-client/{__version__}",
         }
 
     def get(
@@ -114,6 +147,15 @@ class HTTPClient:
             Response JSON as dict
         """
         return self._request("POST", path, json=json, params=params)
+
+    def patch(
+        self,
+        path: str,
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Make a PATCH request."""
+        return self._request("PATCH", path, json=json, params=params)
 
     def delete(
         self,
@@ -168,7 +210,7 @@ class HTTPClient:
 
                 # Check for errors
                 if response.status_code >= 400:
-                    self._handle_error_response(response)
+                    _handle_error_response(response)
 
                 # Return JSON response
                 if response.status_code == 204:
@@ -192,8 +234,13 @@ class HTTPClient:
                 last_exception = e
                 continue
 
-            except APIError:
-                # Don't retry other API errors
+            except APIError as e:
+                # Retry server errors with retryable status codes
+                if e.status_code in RETRYABLE_STATUS_CODES and attempt < self._max_retries:
+                    last_exception = e
+                    time.sleep(retry_delay)
+                    retry_delay *= RETRY_BACKOFF_FACTOR
+                    continue
                 raise
 
         # If we get here, all retries failed
@@ -206,45 +253,6 @@ class HTTPClient:
             )
 
         raise APIError(message="Request failed with unknown error", status_code=0)
-
-    def _handle_error_response(self, response: httpx.Response) -> None:
-        """
-        Parse error response and raise appropriate exception.
-
-        Args:
-            response: HTTP response with error status
-
-        Raises:
-            AuthenticationError: For 401 responses
-            RateLimitError: For 429 responses
-            APIError: For other error responses
-        """
-        try:
-            error_data = response.json()
-        except Exception:
-            error_data = {"message": response.text or "Unknown error"}
-
-        error_message = error_data.get("message", error_data.get("error", "Unknown error"))
-        error_code = error_data.get("error")
-        details = error_data.get("details", {})
-
-        if response.status_code == 401:
-            raise AuthenticationError(message=error_message, details=details)
-
-        if response.status_code == 429:
-            retry_after = None
-            if "Retry-After" in response.headers:
-                with contextlib.suppress(ValueError):
-                    retry_after = int(response.headers["Retry-After"])
-            retry_after = retry_after or error_data.get("retry_after")
-            raise RateLimitError(message=error_message, retry_after=retry_after, details=details)
-
-        raise APIError(
-            message=error_message,
-            status_code=response.status_code,
-            error_code=error_code,
-            details=details,
-        )
 
     def close(self) -> None:
         """Close the HTTP client."""
@@ -285,11 +293,13 @@ class AsyncHTTPClient:
 
     def _default_headers(self) -> dict[str, str]:
         """Get default headers for all requests."""
+        from gofetch import __version__
+
         return {
             API_KEY_HEADER: self._api_key,
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "gofetch-client/0.1.0",
+            "User-Agent": f"gofetch-client/{__version__}",
         }
 
     async def get(
@@ -308,6 +318,15 @@ class AsyncHTTPClient:
     ) -> dict[str, Any]:
         """Make a POST request."""
         return await self._request("POST", path, json=json, params=params)
+
+    async def patch(
+        self,
+        path: str,
+        json: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Make a PATCH request."""
+        return await self._request("PATCH", path, json=json, params=params)
 
     async def delete(
         self,
@@ -340,7 +359,7 @@ class AsyncHTTPClient:
                 )
 
                 if response.status_code >= 400:
-                    self._handle_error_response(response)
+                    _handle_error_response(response)
 
                 if response.status_code == 204:
                     return {}
@@ -362,7 +381,13 @@ class AsyncHTTPClient:
                 last_exception = e
                 continue
 
-            except APIError:
+            except APIError as e:
+                # Retry server errors with retryable status codes
+                if e.status_code in RETRYABLE_STATUS_CODES and attempt < self._max_retries:
+                    last_exception = e
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= RETRY_BACKOFF_FACTOR
+                    continue
                 raise
 
         if last_exception:
@@ -374,35 +399,6 @@ class AsyncHTTPClient:
             )
 
         raise APIError(message="Request failed with unknown error", status_code=0)
-
-    def _handle_error_response(self, response: httpx.Response) -> None:
-        """Parse error response and raise appropriate exception."""
-        try:
-            error_data = response.json()
-        except Exception:
-            error_data = {"message": response.text or "Unknown error"}
-
-        error_message = error_data.get("message", error_data.get("error", "Unknown error"))
-        error_code = error_data.get("error")
-        details = error_data.get("details", {})
-
-        if response.status_code == 401:
-            raise AuthenticationError(message=error_message, details=details)
-
-        if response.status_code == 429:
-            retry_after = None
-            if "Retry-After" in response.headers:
-                with contextlib.suppress(ValueError):
-                    retry_after = int(response.headers["Retry-After"])
-            retry_after = retry_after or error_data.get("retry_after")
-            raise RateLimitError(message=error_message, retry_after=retry_after, details=details)
-
-        raise APIError(
-            message=error_message,
-            status_code=response.status_code,
-            error_code=error_code,
-            details=details,
-        )
 
     async def close(self) -> None:
         """Close the async HTTP client."""

@@ -6,14 +6,17 @@ Provides Apify-compatible interface for fetching scraper results.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import AsyncIterator, Iterator
 
     from gofetch.http import AsyncHTTPClient, HTTPClient
 
 from gofetch.constants import DEFAULT_PAGE_SIZE
+
+logger = logging.getLogger(__name__)
 
 
 class DatasetClient:
@@ -23,14 +26,7 @@ class DatasetClient:
     Provides the same methods as Apify's DatasetClient:
     - iterate_items() for iterating over all results
     - list_items() for getting results as a list
-    - delete() for cleanup (no-op in GoFetch)
-
-    Usage:
-        client = GoFetchClient(api_key="...")
-        run = actor.call(run_input={...})
-
-        dataset = client.dataset(run["defaultDatasetId"])
-        items = list(dataset.iterate_items())
+    - delete() for cleanup (logs warning in GoFetch)
     """
 
     def __init__(
@@ -38,13 +34,6 @@ class DatasetClient:
         http: HTTPClient,
         job_id: str,
     ) -> None:
-        """
-        Initialize dataset client.
-
-        Args:
-            http: HTTP client for API requests
-            job_id: Job ID (same as dataset ID in GoFetch)
-        """
         self._http = http
         self._job_id = job_id
 
@@ -52,32 +41,15 @@ class DatasetClient:
         self,
         offset: int = 0,
         limit: int | None = None,
-        clean: bool | None = None,  # Ignored, Apify compat
-        fields: list[str] | None = None,  # Ignored, Apify compat
-        omit: list[str] | None = None,  # Ignored, Apify compat
-        unwind: str | None = None,  # Ignored, Apify compat
-        desc: bool | None = None,  # Ignored, Apify compat
+        clean: bool | None = None,
+        fields: list[str] | None = None,
+        omit: list[str] | None = None,
+        unwind: str | None = None,
+        desc: bool | None = None,
     ) -> Iterator[dict[str, Any]]:
-        """
-        Iterate over all items in the dataset.
+        """Iterate over all items in the dataset.
 
-        Equivalent to Apify's dataset.iterate_items().
-
-        Args:
-            offset: Number of items to skip
-            limit: Maximum number of items to return (None for all)
-            clean: Ignored (Apify compatibility)
-            fields: Ignored (Apify compatibility)
-            omit: Ignored (Apify compatibility)
-            unwind: Ignored (Apify compatibility)
-            desc: Ignored (Apify compatibility)
-
-        Yields:
-            Individual result items from the scraper
-
-        Example:
-            for item in dataset.iterate_items():
-                print(item["id"], item.get("caption"))
+        Yields individual result items. This is a true lazy generator.
         """
         page_size = DEFAULT_PAGE_SIZE
         current_offset = offset
@@ -100,14 +72,12 @@ class DatasetClient:
                 if limit is not None and items_yielded >= limit:
                     return
 
-                # Add metadata like Apify does
-                item["runId"] = self._job_id
+                item = {**item, "runId": self._job_id}
                 yield item
                 items_yielded += 1
 
             current_offset += len(items)
 
-            # Check if we've fetched all items
             total = response.get("total", 0)
             if current_offset >= total:
                 break
@@ -122,23 +92,7 @@ class DatasetClient:
         unwind: str | None = None,
         desc: bool | None = None,
     ) -> list[dict[str, Any]]:
-        """
-        Get all items as a list.
-
-        Equivalent to list(dataset.iterate_items()).
-
-        Args:
-            offset: Number of items to skip
-            limit: Maximum number of items to return
-            clean: Ignored (Apify compatibility)
-            fields: Ignored (Apify compatibility)
-            omit: Ignored (Apify compatibility)
-            unwind: Ignored (Apify compatibility)
-            desc: Ignored (Apify compatibility)
-
-        Returns:
-            List of all result items
-        """
+        """Get all items as a list."""
         return list(
             self.iterate_items(
                 offset=offset,
@@ -152,12 +106,7 @@ class DatasetClient:
         )
 
     def get_info(self) -> dict[str, Any]:
-        """
-        Get dataset/job information.
-
-        Returns:
-            Dict with dataset info including item count
-        """
+        """Get dataset/job information."""
         job = self._http.get(f"/api/v1/jobs/{self._job_id}/")
         return {
             "id": self._job_id,
@@ -168,33 +117,21 @@ class DatasetClient:
         }
 
     def delete(self) -> None:
-        """
-        Delete the dataset (cleanup).
-
-        In GoFetch, this is a no-op as results are stored in S3
-        with automatic expiration. Kept for Apify API compatibility.
-
-        Note: You can optionally cancel the job if it's still running
-        by uncommenting the line below.
-        """
-        # No-op for GoFetch - results auto-expire in S3
-        # Could optionally cancel job: self._http.delete(f"/api/v1/jobs/{self._job_id}/")
-        pass
+        """Delete the dataset (no-op in GoFetch, logs warning)."""
+        logger.warning(
+            "dataset.delete() is a no-op in GoFetch. "
+            "GoFetch manages dataset retention automatically."
+        )
 
 
 class AsyncDatasetClient:
-    """
-    Async dataset client for GoFetch API.
-
-    Same interface as DatasetClient but uses async/await.
-    """
+    """Async dataset client for GoFetch API."""
 
     def __init__(
         self,
         http: AsyncHTTPClient,
         job_id: str,
     ) -> None:
-        """Initialize async dataset client."""
         self._http = http
         self._job_id = job_id
 
@@ -207,24 +144,11 @@ class AsyncDatasetClient:
         omit: list[str] | None = None,
         unwind: str | None = None,
         desc: bool | None = None,
-    ) -> list[dict[str, Any]]:
-        """
-        Get all items from the dataset.
-
-        Note: For async, this returns a list instead of an async iterator
-        for simplicity. Use offset/limit for pagination.
-
-        Args:
-            offset: Number of items to skip
-            limit: Maximum number of items to return
-
-        Returns:
-            List of result items
-        """
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Iterate over all items in the dataset. Async generator."""
         page_size = DEFAULT_PAGE_SIZE
         current_offset = offset
-        all_items: list[dict[str, Any]] = []
-        items_fetched = 0
+        items_yielded = 0
 
         while True:
             response = await self._http.get(
@@ -240,12 +164,12 @@ class AsyncDatasetClient:
                 break
 
             for item in items:
-                if limit is not None and items_fetched >= limit:
-                    return all_items
+                if limit is not None and items_yielded >= limit:
+                    return
 
-                item["runId"] = self._job_id
-                all_items.append(item)
-                items_fetched += 1
+                item = {**item, "runId": self._job_id}
+                yield item
+                items_yielded += 1
 
             current_offset += len(items)
 
@@ -253,16 +177,28 @@ class AsyncDatasetClient:
             if current_offset >= total:
                 break
 
-        return all_items
-
     async def list_items(
         self,
         offset: int = 0,
         limit: int | None = None,
-        **kwargs: Any,
+        clean: bool | None = None,
+        fields: list[str] | None = None,
+        omit: list[str] | None = None,
+        unwind: str | None = None,
+        desc: bool | None = None,
     ) -> list[dict[str, Any]]:
         """Get all items as a list."""
-        return await self.iterate_items(offset=offset, limit=limit)
+        return [
+            item async for item in self.iterate_items(
+                offset=offset,
+                limit=limit,
+                clean=clean,
+                fields=fields,
+                omit=omit,
+                unwind=unwind,
+                desc=desc,
+            )
+        ]
 
     async def get_info(self) -> dict[str, Any]:
         """Get dataset/job information."""
@@ -276,5 +212,8 @@ class AsyncDatasetClient:
         }
 
     async def delete(self) -> None:
-        """Delete the dataset (no-op in GoFetch)."""
-        pass
+        """Delete the dataset (no-op in GoFetch, logs warning)."""
+        logger.warning(
+            "dataset.delete() is a no-op in GoFetch. "
+            "GoFetch manages dataset retention automatically."
+        )

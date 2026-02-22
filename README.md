@@ -230,6 +230,173 @@ ruff check src/
 mypy src/
 ```
 
+---
+
+## Agentic Development Infrastructure
+
+This project ships with a complete [Claude Code](https://claude.ai/claude-code) agentic infrastructure — specialized agents, one-command skills, safety hooks, and a regression test framework. Everything lives under `.claude/` and activates automatically when you open a Claude Code session.
+
+```
+.claude/
+├── settings.local.json        # Permissions + hook wiring
+├── hooks/                     # 6 safety & automation hooks
+├── agents/                    # 7 specialized agent definitions
+└── skills/                    # 8 invocable skill workflows
+docs/
+└── REGRESSION_TESTING.md      # 90 test cases across 8 modules
+```
+
+### Hooks
+
+Hooks run automatically — you never call them directly. They intercept operations in real-time.
+
+#### Safety hooks
+
+| Hook | Trigger | Behavior |
+|------|---------|----------|
+| `no-ai-attribution.sh` | Before `git commit` | Blocks commits containing `Co-Authored-By` AI references |
+| `destructive-command-confirm.sh` | Before any shell command | Blocks `git push --force`, `reset --hard`, `rm -rf /`, `clean -f`, `branch -D`, `checkout .` |
+| `protect-sensitive-files.sh` | Before editing a file | Blocks edits to `.env`, `.pem`, `.key`, `credentials.*`, `secrets.*` |
+
+#### Automation hooks
+
+| Hook | Trigger | Behavior |
+|------|---------|----------|
+| `test-before-commit.sh` | Before `git commit` | Non-blocking reminder listing staged `.py` files |
+| `auto-lint.sh` | After editing a `.py` file | Runs `ruff check --fix` silently on the file |
+| `session-context.sh` | Session start | Prints version, branch, working tree, recent commits, available skills/agents |
+
+Hooks work invisibly during normal development. For example, editing `src/gofetch/http.py` will trigger `protect-sensitive-files.sh` (passes — not a secret file), then after the edit `auto-lint.sh` fixes import ordering automatically. Committing triggers `no-ai-attribution.sh`, `destructive-command-confirm.sh`, and `test-before-commit.sh` in sequence.
+
+### Agents
+
+Seven role-specific experts, each with deep knowledge of their domain and strict boundaries on what they should and shouldn't touch.
+
+| Agent | Role | When to Use |
+|-------|------|-------------|
+| **sdk-developer** | Core development | Features, bugs, refactoring across all modules |
+| **api-compatibility-specialist** | Apify interface guardian | Verifying/fixing `apify-client` compatibility |
+| **qa-engineer** | Manual QA (reporter only) | Hands-on testing — produces reports, never modifies code |
+| **test-engineer** | Automated test writer | Writing pytest suites, closing coverage gaps |
+| **async-specialist** | Async/await expert | Async implementations, sync/async parity |
+| **docs-writer** | Documentation | README, CHANGELOG, docstrings, migration guides |
+| **release-manager** | Version + publishing | Version bumps, changelog, tagging, PyPI releases |
+
+**The `qa-engineer` is special** — it has strict reporter-only rules. It NEVER modifies source or test files, NEVER suggests patches, and NEVER commits. It runs 12 structured testing phases and produces a severity-rated report. This separation is intentional: QA finds problems, developers fix them.
+
+#### Agent selection
+
+```
+Writing/fixing code?
+├── Async-specific?  → async-specialist
+├── Apify compat?    → api-compatibility-specialist
+└── General          → sdk-developer
+
+Testing?
+├── Writing tests    → test-engineer
+└── Manual QA        → qa-engineer
+
+Documentation?       → docs-writer
+Releasing?           → release-manager
+```
+
+### Skills
+
+Skills are one-command workflows invoked with `/skill-name` in Claude Code.
+
+| Skill | Purpose | Duration |
+|-------|---------|----------|
+| `/self-test` | Lint + types + targeted tests on changed files | ~30 sec |
+| `/regression-lite` | ~50 core tests from every module | ~15-20 min |
+| `/regression-full` | All 90+ tests with parametrized variants (150+ effective) | ~45-60 min |
+| `/review-changes` | Pre-commit review: security, types, compatibility, style, coverage | ~2-5 min |
+| `/debug` | Hypothesis-driven debugging: reproduce, hypothesize, investigate, isolate | varies |
+| `/fix-from-qa` | Parse a QA report, triage, fix by severity | varies |
+| `/manual-qa [scope]` | Launch qa-engineer with scope: `client`, `http`, `webhook`, `async`, `compat`, `all` | ~20-30 min |
+| `/release [major\|minor\|patch]` | Full release: validate, version, changelog, tag, publish | ~10-15 min |
+
+### Real-World Workflows
+
+#### Adding a new feature
+
+```
+1. Implement in src/gofetch/ (maintain sync/async parity)
+2. /self-test              → quick validation
+3. /review-changes         → pre-commit check (catches compat issues, missing tests)
+4. Write tests             → use test-engineer agent
+5. Commit
+```
+
+**Example — adding a new scraper type (e.g., Twitter/X):**
+
+The `sdk-developer` agent plans changes across `types.py`, `constants.py`, and actor URL resolution. After implementation, `/self-test` catches type errors from the new enum. `/review-changes` flags the missing test coverage. The `test-engineer` agent writes parametrized tests. `/manual-qa compat` verifies the new actor URL resolves correctly through the Apify compatibility layer. On commit, `no-ai-attribution.sh` checks the message and `test-before-commit.sh` lists the staged Python files.
+
+#### Debugging a production issue
+
+```
+1. /debug <description>    → structured investigation
+2. Fix the root cause
+3. /self-test              → verify fix + no regressions
+4. /regression-lite        → broader regression check
+5. Commit
+```
+
+**Example — "Jobs time out even though the API shows them as completed":**
+
+`/debug` reproduces the issue with mock HTTP, generates 3-5 hypotheses ranked by likelihood, and investigates each one. It might find that the polling loop compares raw GoFetch status `"completed"` against Apify status `"SUCCEEDED"` — a mapping issue in `actor.py:_wait_for_completion()`. After fixing, `/self-test` confirms the fix and `/regression-lite` runs all actor polling tests (ACT-04 through ACT-06).
+
+#### Full QA cycle before a release
+
+```
+1. /manual-qa all          → 12-phase QA, produces severity-rated report
+2. /fix-from-qa            → parse report, fix SEV-1 first, then SEV-2, SEV-3
+3. /manual-qa all          → re-run to verify all fixes
+4. /regression-full        → 150+ tests, coverage threshold check (80%)
+5. /release minor          → validate, bump, changelog, tag, push
+```
+
+**Example — shipping v0.2.0:**
+
+`/manual-qa all` runs through environment verification, unit smoke tests, client instantiation, actor testing, dataset pagination, HTTP retries with mock transports, webhook signatures, exception hierarchy, async clients, edge cases, mypy, and ruff. It produces a report finding 5 issues. `/fix-from-qa` processes the report, fixing the SEV-1 (async client not raising `AuthenticationError`) first, then SEV-2s and SEV-3s — each fix includes a test. Re-running `/manual-qa all` comes back clean. `/regression-full` confirms 150+ tests pass at 83% coverage. `/release minor` bumps `0.1.0 → 0.2.0`, updates both version locations, prepares the changelog, commits, tags, and pauses for confirmation before pushing.
+
+#### Maintaining sync/async parity
+
+```
+1. Change a sync method (e.g., HTTPClient.get)
+2. /review-changes         → flags that AsyncHTTPClient.get wasn't updated
+3. Mirror the change in the async counterpart
+4. /manual-qa async        → verifies both behave identically
+```
+
+The `async-specialist` agent knows every sync/async class pair and common pitfalls — like accidentally using `time.sleep()` instead of `asyncio.sleep()` in async code, or forgetting to `await` a coroutine.
+
+### Regression Testing
+
+The full specification lives at [`docs/REGRESSION_TESTING.md`](docs/REGRESSION_TESTING.md) — 90 test cases with unique IDs:
+
+| Module | IDs | Count | Priority |
+|--------|-----|-------|----------|
+| Client | CLI-01..10 | 10 | Medium |
+| Actor | ACT-01..15 | 15 | High |
+| Dataset | DAT-01..10 | 10 | High |
+| HTTP | HTTP-01..12 | 12 | Highest |
+| Webhook | WHK-01..10 | 10 | Medium |
+| Async | ASY-01..15 | 15 | High |
+| Compatibility | CMP-01..10 | 10 | Medium |
+| Exceptions | EXC-01..08 | 8 | Low |
+
+Each test specifies preconditions, steps, and expected results. Many use `@pytest.mark.parametrize` — effective count exceeds 150.
+
+Reference test IDs in PRs and bug reports: *"This PR fixes the issue exposed by ACT-06 (polling backoff timing)"* or *"Blocked on HTTP-08 — need backoff timing test before shipping retry changes."*
+
+### Customizing the Infrastructure
+
+**Add a hook:** Create a script in `.claude/hooks/`, `chmod +x` it, wire it in `settings.local.json` under `PreToolUse`, `PostToolUse`, or `SessionStart`. Exit `0` to allow, `2` to block.
+
+**Add an agent:** Create a markdown file in `.claude/agents/` with sections: Identity, Codebase Knowledge, Responsibilities, Boundaries.
+
+**Add a skill:** Create `.claude/skills/<name>/SKILL.md` with YAML frontmatter (`name`, `description`, `user_invocable: true`) and step-by-step procedure.
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.

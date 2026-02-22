@@ -35,6 +35,7 @@ GOFETCH_EVENT_COMPLETED = "job.completed"
 GOFETCH_EVENT_FAILED = "job.failed"
 GOFETCH_EVENT_PROGRESS = "job.progress"
 GOFETCH_EVENT_STARTED = "job.started"
+GOFETCH_EVENT_TIMED_OUT = "job.timed_out"
 GOFETCH_EVENT_CREATED = "job.created"
 
 # Status mappings
@@ -43,18 +44,11 @@ GOFETCH_TO_APIFY_STATUS = {
     "running": "RUNNING",
     "completed": "SUCCEEDED",
     "failed": "FAILED",
+    "timed_out": "TIMED-OUT",
     "cancelled": "ABORTED",
 }
 
 APIFY_TO_GOFETCH_STATUS = {v: k for k, v in GOFETCH_TO_APIFY_STATUS.items()}
-
-# Scraper type mappings (Apify actor URL -> GoFetch type)
-ACTOR_URL_TO_SCRAPER_TYPE = {
-    "apify/instagram-scraper": "instagram",
-    "apify/instagram-profile-scraper": "instagram_profile",
-    "clockworks/tiktok-profile-scraper": "tiktok",
-    "streamers/youtube-scraper": "youtube",
-}
 
 # Ignored errors per platform (items with these errors are not raised as exceptions)
 INSTAGRAM_IGNORED_ERRORS = [
