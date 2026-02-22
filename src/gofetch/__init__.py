@@ -23,9 +23,9 @@ Usage:
     )
 """
 
-from gofetch.actor import ActorClient
-from gofetch.client import GoFetchClient
-from gofetch.dataset import DatasetClient
+from gofetch.actor import ActorClient, AsyncActorClient
+from gofetch.client import AsyncGoFetchClient, GoFetchClient
+from gofetch.dataset import AsyncDatasetClient, DatasetClient
 from gofetch.exceptions import (
     APIError,
     AuthenticationError,
@@ -35,6 +35,8 @@ from gofetch.exceptions import (
     TimeoutError,
     ValidationError,
 )
+from gofetch.log import AsyncLogClient, LogClient
+from gofetch.run import AsyncRunClient, RunClient
 from gofetch.types import (
     JobStatus,
     RunStatus,
@@ -42,8 +44,15 @@ from gofetch.types import (
 )
 from gofetch.webhook import (
     WebhookEventType,
+    generate_webhook_config,
     transform_webhook_payload,
     verify_webhook_signature,
+)
+from gofetch.webhook_client import (
+    AsyncWebhookClient,
+    AsyncWebhookCollectionClient,
+    WebhookClient,
+    WebhookCollectionClient,
 )
 
 # Apify compatibility alias
@@ -55,19 +64,31 @@ __all__ = [
     "APIError",
     "ActorClient",
     "ApifyClient",
+    "AsyncActorClient",
+    "AsyncDatasetClient",
+    "AsyncGoFetchClient",
+    "AsyncLogClient",
+    "AsyncRunClient",
+    "AsyncWebhookClient",
+    "AsyncWebhookCollectionClient",
     "AuthenticationError",
     "DatasetClient",
     "GoFetchClient",
     "GoFetchError",
     "JobError",
     "JobStatus",
+    "LogClient",
     "RateLimitError",
+    "RunClient",
     "RunStatus",
     "ScraperType",
     "TimeoutError",
     "ValidationError",
+    "WebhookClient",
+    "WebhookCollectionClient",
     "WebhookEventType",
     "__version__",
+    "generate_webhook_config",
     "transform_webhook_payload",
     "verify_webhook_signature",
 ]
