@@ -5,13 +5,14 @@ Provides Apify-compatible interface for webhook CRUD operations.
 
 from __future__ import annotations
 
-import builtins
 from typing import TYPE_CHECKING, Any
 
 from gofetch.exceptions import APIError
 from gofetch.webhook import APIFY_TO_GOFETCH_EVENTS, GOFETCH_TO_APIFY_EVENTS
 
 if TYPE_CHECKING:
+    import builtins
+
     from gofetch.http import AsyncHTTPClient, HTTPClient
 
 
