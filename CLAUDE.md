@@ -101,6 +101,14 @@ Is it about writing/fixing code?
 | `/fix-from-qa` | Process QA reports and fix issues by severity | Varies |
 | `/manual-qa` | Launch qa-engineer for hands-on testing | ~20-30 min |
 | `/release` | Full release workflow (validate → version → publish) | ~10-15 min |
+| `/e2e-regression` | E2E orchestrator — all platforms against real API | ~1-3 hours |
+| `/e2e-instagram` | Instagram E2E (base + profile + posts) | ~20-60 min |
+| `/e2e-tiktok` | TikTok E2E | ~10-30 min |
+| `/e2e-youtube` | YouTube E2E | ~10-30 min |
+| `/e2e-reddit` | Reddit E2E | ~10-30 min |
+| `/e2e-google-news` | Google News E2E | ~10-30 min |
+| `/e2e-webhooks` | Webhook delivery & CRUD tests | ~10-15 min |
+| `/e2e-batch` | Batch 25-URL tests (3 platforms) | ~30-60 min |
 
 ## Development Lifecycle
 

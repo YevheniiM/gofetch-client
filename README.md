@@ -11,7 +11,7 @@ A drop-in replacement for `apify-client` that uses the GoFetch.io infrastructure
 ## Features
 
 - **Drop-in replacement** for `apify-client` - minimal code changes required
-- **Multiple platforms**: Instagram, TikTok, YouTube
+- **Multiple platforms**: Instagram, TikTok, YouTube, Reddit, Google News
 - **Sync and async** execution modes
 - **Webhook support** for asynchronous job notifications
 - **Full type hints** for better IDE support
@@ -110,6 +110,8 @@ The client automatically translates Apify actor URLs to GoFetch scrapers:
 - `apify/instagram-profile-scraper` → `instagram_profile`
 - `clockworks/tiktok-profile-scraper` → `tiktok`
 - `streamers/youtube-scraper` → `youtube`
+- `xmolodtsov/reddit-scraper` → `reddit`
+- `xmolodtsov/google-news-scraper` → `google_news`
 
 ## Supported Platforms
 
@@ -143,6 +145,24 @@ run = actor.call(run_input={
     "startUrls": [{"url": "https://www.youtube.com/@MrBeast"}],
     "oldestPostDate": "2024-01-01",
 })
+```
+
+### Reddit
+
+```python
+# Using Apify-style actor URL
+run = client.actor("xmolodtsov/reddit-scraper").call(input={"query": "python"})
+# Or using GoFetch scraper type directly
+run = client.actor("reddit").call(input={"query": "python"})
+```
+
+### Google News
+
+```python
+# Using Apify-style actor URL
+run = client.actor("xmolodtsov/google-news-scraper").call(input={"query": "technology"})
+# Or using GoFetch scraper type directly
+run = client.actor("google_news").call(input={"query": "technology"})
 ```
 
 ## Webhook Handling

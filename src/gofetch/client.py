@@ -121,7 +121,9 @@ class GoFetchClient:
                 - "apify/instagram-profile-scraper" -> instagram_profile
                 - "clockworks/tiktok-profile-scraper" -> tiktok
                 - "streamers/youtube-scraper" -> youtube
-                - Or direct: "instagram", "tiktok", "youtube"
+                - "xmolodtsov/reddit-scraper" -> reddit
+                - "xmolodtsov/google-news-scraper" -> google_news
+                - Or direct: "instagram", "tiktok", "youtube", "reddit", "google_news"
 
         Returns:
             ActorClient instance for the specified scraper
@@ -251,7 +253,26 @@ class AsyncGoFetchClient:
         return self._timeout
 
     def actor(self, actor_url: str) -> AsyncActorClient:
-        """Get an async actor client for a specific scraper."""
+        """
+        Get an async actor client for a specific scraper.
+
+        Args:
+            actor_url: Apify-style actor URL or GoFetch scraper type.
+                Supported values:
+                - "apify/instagram-scraper" -> instagram
+                - "apify/instagram-profile-scraper" -> instagram_profile
+                - "clockworks/tiktok-profile-scraper" -> tiktok
+                - "streamers/youtube-scraper" -> youtube
+                - "xmolodtsov/reddit-scraper" -> reddit
+                - "xmolodtsov/google-news-scraper" -> google_news
+                - Or direct: "instagram", "tiktok", "youtube", "reddit", "google_news"
+
+        Returns:
+            AsyncActorClient instance for the specified scraper
+
+        Raises:
+            ValueError: If actor_url is empty
+        """
         if not actor_url:
             raise ValueError("actor_id must not be empty")
         scraper_type = resolve_actor_url(actor_url)

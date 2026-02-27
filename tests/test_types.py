@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from gofetch import ScraperType, JobStatus, RunStatus
+from gofetch import JobStatus, RunStatus, ScraperType
 from gofetch.types import resolve_actor_url
 
 
@@ -20,6 +18,12 @@ class TestScraperType:
 
     def test_youtube_type(self) -> None:
         assert ScraperType.YOUTUBE == "youtube"
+
+    def test_reddit_type(self) -> None:
+        assert ScraperType.REDDIT == "reddit"
+
+    def test_google_news_type(self) -> None:
+        assert ScraperType.GOOGLE_NEWS == "google_news"
 
 
 class TestJobStatus:
@@ -67,10 +71,20 @@ class TestResolveActorUrl:
     def test_streamers_youtube(self) -> None:
         assert resolve_actor_url("streamers/youtube-scraper") == "youtube"
 
+    def test_xmolodtsov_reddit(self) -> None:
+        assert resolve_actor_url("xmolodtsov/reddit-scraper") == "reddit"
+
+    def test_xmolodtsov_google_news(self) -> None:
+        assert resolve_actor_url("xmolodtsov/google-news-scraper") == "google_news"
+
     def test_direct_type(self) -> None:
         assert resolve_actor_url("instagram") == "instagram"
+        assert resolve_actor_url("instagram_profile") == "instagram_profile"
+        assert resolve_actor_url("instagram_posts") == "instagram_posts"
         assert resolve_actor_url("tiktok") == "tiktok"
         assert resolve_actor_url("youtube") == "youtube"
+        assert resolve_actor_url("reddit") == "reddit"
+        assert resolve_actor_url("google_news") == "google_news"
 
     def test_unknown_type(self) -> None:
         assert resolve_actor_url("unknown/actor") == "unknown/actor"
