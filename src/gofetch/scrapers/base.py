@@ -5,7 +5,7 @@ Base scraper interface.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
 
 from gofetch.constants import (
     GOOGLE_NEWS_IGNORED_ERRORS,
@@ -49,18 +49,16 @@ _PLATFORM_NOTES: dict[str, list[str]] = {
 class BaseScraper(ABC):
     """Abstract base class for platform-specific scrapers."""
 
-    IGNORED_ERRORS: ClassVar[list[str]] = []
-    IGNORED_NOTES: ClassVar[list[str]] = []
-
     def __init__(self, client: GoFetchClient, scraper_type: str) -> None:
         self._client = client
         self._scraper_type = scraper_type
         self._actor = client.actor(scraper_type)
-        # Auto-load platform-specific filters if not overridden by subclass
-        if not self.IGNORED_ERRORS:
-            self.IGNORED_ERRORS = _PLATFORM_ERRORS.get(scraper_type, [])
-        if not self.IGNORED_NOTES:
-            self.IGNORED_NOTES = _PLATFORM_NOTES.get(scraper_type, [])
+        # Use subclass overrides if defined, otherwise load from platform registry
+        cls = type(self)
+        if "IGNORED_ERRORS" not in cls.__dict__:
+            self.IGNORED_ERRORS: list[str] = _PLATFORM_ERRORS.get(scraper_type, [])
+        if "IGNORED_NOTES" not in cls.__dict__:
+            self.IGNORED_NOTES: list[str] = _PLATFORM_NOTES.get(scraper_type, [])
 
     @abstractmethod
     def run(self, *args: Any, **kwargs: Any) -> RunStatus:
