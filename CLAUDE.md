@@ -100,7 +100,7 @@ Is it about writing/fixing code?
 | `/debug` | Hypothesis-driven debugging workflow | Varies |
 | `/fix-from-qa` | Process QA reports and fix issues by severity | Varies |
 | `/manual-qa` | Launch qa-engineer for hands-on testing | ~20-30 min |
-| `/release` | Full release workflow (validate → version → publish) | ~10-15 min |
+| `/release` | Full E2E release — PR, version, changelog, merge, tag, publish, verify PyPI | ~10-15 min |
 | `/e2e-regression` | E2E orchestrator — all platforms against real API | ~1-3 hours |
 | `/e2e-instagram` | Instagram E2E (base + profile + posts) | ~20-60 min |
 | `/e2e-tiktok` | TikTok E2E | ~10-30 min |
