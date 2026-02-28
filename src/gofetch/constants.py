@@ -5,7 +5,7 @@ Constants used throughout the GoFetch client.
 from __future__ import annotations
 
 # API Configuration
-DEFAULT_BASE_URL = "https://api.go-fetch.io"
+DEFAULT_BASE_URL = "https://go-fetch.io"
 DEFAULT_TIMEOUT = 30.0  # seconds
 DEFAULT_POLL_INTERVAL = 2.0  # seconds
 MAX_POLL_INTERVAL = 30.0  # seconds
@@ -59,6 +59,8 @@ INSTAGRAM_IGNORED_ERRORS = [
     "restricted_page",
 ]
 
+INSTAGRAM_IGNORED_NOTES: list[str] = []
+
 TIKTOK_IGNORED_ERRORS = [
     "This profile/hashtag does not exist.",
 ]
@@ -91,3 +93,9 @@ YOUTUBE_IGNORED_NOTES = [
     "This video is not available",
     "No results were collected during scrape - make sure video limits are set above 0",
 ]
+
+REDDIT_IGNORED_ERRORS: list[str] = []
+REDDIT_IGNORED_NOTES: list[str] = []
+
+GOOGLE_NEWS_IGNORED_ERRORS: list[str] = []
+GOOGLE_NEWS_IGNORED_NOTES: list[str] = []

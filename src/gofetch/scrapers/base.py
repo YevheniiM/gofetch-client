@@ -5,23 +5,60 @@ Base scraper interface.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any
+
+from gofetch.constants import (
+    GOOGLE_NEWS_IGNORED_ERRORS,
+    GOOGLE_NEWS_IGNORED_NOTES,
+    INSTAGRAM_IGNORED_ERRORS,
+    INSTAGRAM_IGNORED_NOTES,
+    REDDIT_IGNORED_ERRORS,
+    REDDIT_IGNORED_NOTES,
+    TIKTOK_IGNORED_ERRORS,
+    TIKTOK_IGNORED_NOTES,
+    YOUTUBE_IGNORED_ERRORS,
+    YOUTUBE_IGNORED_NOTES,
+)
 
 if TYPE_CHECKING:
     from gofetch.client import GoFetchClient
     from gofetch.types import RunStatus
 
+# Module-level registry
+_PLATFORM_ERRORS: dict[str, list[str]] = {
+    "instagram": INSTAGRAM_IGNORED_ERRORS,
+    "instagram_profile": INSTAGRAM_IGNORED_ERRORS,
+    "instagram_posts": INSTAGRAM_IGNORED_ERRORS,
+    "tiktok": TIKTOK_IGNORED_ERRORS,
+    "youtube": YOUTUBE_IGNORED_ERRORS,
+    "reddit": REDDIT_IGNORED_ERRORS,
+    "google_news": GOOGLE_NEWS_IGNORED_ERRORS,
+}
+
+_PLATFORM_NOTES: dict[str, list[str]] = {
+    "instagram": INSTAGRAM_IGNORED_NOTES,
+    "instagram_profile": INSTAGRAM_IGNORED_NOTES,
+    "instagram_posts": INSTAGRAM_IGNORED_NOTES,
+    "tiktok": TIKTOK_IGNORED_NOTES,
+    "youtube": YOUTUBE_IGNORED_NOTES,
+    "reddit": REDDIT_IGNORED_NOTES,
+    "google_news": GOOGLE_NEWS_IGNORED_NOTES,
+}
+
 
 class BaseScraper(ABC):
     """Abstract base class for platform-specific scrapers."""
-
-    IGNORED_ERRORS: ClassVar[list[str]] = []
-    IGNORED_NOTES: ClassVar[list[str]] = []
 
     def __init__(self, client: GoFetchClient, scraper_type: str) -> None:
         self._client = client
         self._scraper_type = scraper_type
         self._actor = client.actor(scraper_type)
+        # Use subclass overrides if defined, otherwise load from platform registry
+        cls = type(self)
+        if "IGNORED_ERRORS" not in cls.__dict__:
+            self.IGNORED_ERRORS: list[str] = _PLATFORM_ERRORS.get(scraper_type, [])
+        if "IGNORED_NOTES" not in cls.__dict__:
+            self.IGNORED_NOTES: list[str] = _PLATFORM_NOTES.get(scraper_type, [])
 
     @abstractmethod
     def run(self, *args: Any, **kwargs: Any) -> RunStatus:

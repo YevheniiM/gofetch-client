@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from gofetch import GoFetchClient, ApifyClient
+from gofetch import ApifyClient, GoFetchClient
 from gofetch.actor import ActorClient
 from gofetch.dataset import DatasetClient
 
@@ -42,6 +42,10 @@ class TestGoFetchClient:
         assert actor._scraper_type == "tiktok"
         actor = client.actor("streamers/youtube-scraper")
         assert actor._scraper_type == "youtube"
+        actor = client.actor("xmolodtsov/reddit-scraper")
+        assert actor._scraper_type == "reddit"
+        actor = client.actor("xmolodtsov/google-news-scraper")
+        assert actor._scraper_type == "google_news"
         client.close()
 
     def test_actor_accepts_direct_types(self) -> None:
@@ -50,6 +54,16 @@ class TestGoFetchClient:
         assert actor._scraper_type == "instagram"
         actor = client.actor("tiktok")
         assert actor._scraper_type == "tiktok"
+        actor = client.actor("youtube")
+        assert actor._scraper_type == "youtube"
+        actor = client.actor("reddit")
+        assert actor._scraper_type == "reddit"
+        actor = client.actor("google_news")
+        assert actor._scraper_type == "google_news"
+        actor = client.actor("instagram_profile")
+        assert actor._scraper_type == "instagram_profile"
+        actor = client.actor("instagram_posts")
+        assert actor._scraper_type == "instagram_posts"
         client.close()
 
     def test_dataset_method_returns_dataset_client(self) -> None:

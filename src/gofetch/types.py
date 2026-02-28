@@ -6,6 +6,7 @@ Includes enums, data classes, and Pydantic models for API responses.
 
 from __future__ import annotations
 
+import warnings
 from enum import Enum
 from typing import Any, NamedTuple
 
@@ -21,6 +22,8 @@ class ScraperType(str, Enum):
     - INSTAGRAM_PROFILE -> apify/instagram-profile-scraper
     - TIKTOK -> clockworks/tiktok-profile-scraper
     - YOUTUBE -> streamers/youtube-scraper
+    - REDDIT -> xmolodtsov/reddit-scraper
+    - GOOGLE_NEWS -> xmolodtsov/google-news-scraper
     """
 
     INSTAGRAM = "instagram"
@@ -28,6 +31,8 @@ class ScraperType(str, Enum):
     INSTAGRAM_POSTS = "instagram_posts"
     TIKTOK = "tiktok"
     YOUTUBE = "youtube"
+    REDDIT = "reddit"
+    GOOGLE_NEWS = "google_news"
 
 
 class JobStatus(str, Enum):
@@ -153,12 +158,16 @@ ACTOR_URL_MAPPING: dict[str, str] = {
     "apify/instagram-profile-scraper": "instagram_profile",
     "clockworks/tiktok-profile-scraper": "tiktok",
     "streamers/youtube-scraper": "youtube",
+    "xmolodtsov/reddit-scraper": "reddit",
+    "xmolodtsov/google-news-scraper": "google_news",
     # Direct mappings (already GoFetch types)
     "instagram": "instagram",
     "instagram_profile": "instagram_profile",
     "instagram_posts": "instagram_posts",
     "tiktok": "tiktok",
     "youtube": "youtube",
+    "reddit": "reddit",
+    "google_news": "google_news",
 }
 
 
@@ -178,4 +187,11 @@ def resolve_actor_url(actor_url: str) -> str:
         >>> resolve_actor_url("instagram")
         'instagram'
     """
-    return ACTOR_URL_MAPPING.get(actor_url, actor_url)
+    result = ACTOR_URL_MAPPING.get(actor_url)
+    if result is None:
+        warnings.warn(
+            f"Unknown actor URL '{actor_url}', passing through as scraper type",
+            stacklevel=2,
+        )
+        return actor_url
+    return result

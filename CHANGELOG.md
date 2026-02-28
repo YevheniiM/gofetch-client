@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-02-28
+
+### Added
+
+- Reddit scraper support (`ScraperType.REDDIT`, actor URL `xmolodtsov/reddit-scraper`)
+- Google News scraper support (`ScraperType.GOOGLE_NEWS`, actor URL `xmolodtsov/google-news-scraper`)
+- `BaseScraper` abstract class with automatic platform-specific error/note filtering
+- Comprehensive E2E test suite — scraping, batch, and webhook tests across all platforms
+
+### Changed
+
+- Base API URL updated to `https://go-fetch.io`
+- Unknown Apify actor URLs now emit a warning instead of silently passing through
+
+### Fixed
+
+- mypy `ClassVar` assignment errors in `BaseScraper` — moved to instance attributes with subclass override support
+
 ## [0.1.0] - 2025-01-10
 
 ### Added
