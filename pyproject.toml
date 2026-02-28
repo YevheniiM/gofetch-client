@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gofetch-client"
-version = "0.1.0"
+version = "0.2.0"
 description = "Python client for GoFetch.io social media scraping API - Drop-in replacement for apify-client"
 readme = "README.md"
 license = {text = "MIT"}
