@@ -103,14 +103,19 @@ def validate_results(
         return issues  # no point checking further
 
     # --- Check result count vs requested tier ---
-    min_ratio = platform_config.get("min_result_ratio", 0.3)
-    expected_min = max(1, int(tier * min_ratio))
-    if len(results) < expected_min:
-        issues.append(
-            f"LOW RESULTS: Got {len(results)} items for limit {tier} "
-            f"(expected at least {expected_min}, ratio={min_ratio}). "
-            f"This may indicate throttling or a partial failure."
-        )
+    if platform_config.get("single_document"):
+        # Single-document scrapers (e.g. instagram_profile) return exactly 1
+        # item regardless of the requested limit — skip count validation.
+        pass
+    else:
+        min_ratio = platform_config.get("min_result_ratio", 0.3)
+        expected_min = max(1, int(tier * min_ratio))
+        if len(results) < expected_min:
+            issues.append(
+                f"LOW RESULTS: Got {len(results)} items for limit {tier} "
+                f"(expected at least {expected_min}, ratio={min_ratio}). "
+                f"This may indicate throttling or a partial failure."
+            )
 
     # --- Check that results are not all identical ---
     if len(results) > 1:
@@ -445,6 +450,8 @@ def test_start_then_wait(
 def _make_pagination_params() -> list[tuple]:
     params = []
     for platform_name, platform_config in PLATFORMS.items():
+        if platform_config.get("single_document"):
+            continue  # skip single-document scrapers — pagination is N/A
         target = platform_config["targets"][0]
         params.append(
             pytest.param(

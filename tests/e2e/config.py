@@ -162,7 +162,8 @@ PLATFORMS: dict[str, dict] = {
         "targets": INSTAGRAM_PROFILE_TARGETS,
         "limit_key": "resultsLimit",
         "expected_fields": ["url"],
-        "min_result_ratio": 0.1,  # profiles return fewer items
+        "single_document": True,  # profile mode returns exactly 1 profile doc regardless of limit
+        "min_result_ratio": 0.0,  # not applicable — single document mode
     },
     "instagram_posts": {
         "scraper_type": "instagram_posts",
