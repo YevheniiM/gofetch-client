@@ -224,7 +224,7 @@ def _make_test_params() -> list[tuple]:
     params = []
     for platform_name, platform_config in PLATFORMS.items():
         for target in platform_config["targets"]:
-            for tier in RESULT_TIERS:
+            for tier in platform_config.get("tiers", RESULT_TIERS):
                 marks = [pytest.mark.xdist_group(target["name"])]
                 if tier >= 500:
                     marks.append(pytest.mark.slow)
@@ -497,7 +497,9 @@ def test_pagination_integrity(client: GoFetchClient, platform_name: str) -> None
     platform_config = PLATFORMS[platform_name]
     scraper_type = platform_config["scraper_type"]
     limit_key = platform_config["limit_key"]
-    tier = 500
+    # Respect platform ceiling — no point requesting 500 when max is ~100
+    platform_max = platform_config.get("platform_max_results")
+    tier = min(500, platform_max) if platform_max else 500
     timeout = timeout_for_tier(tier, platform_name)
     target = platform_config["targets"][0]
 

@@ -1,12 +1,15 @@
 """
-E2E batch tests — 25 creator URLs per platform with date filtering.
+E2E batch tests — 25 inputs per platform with optional date filtering.
 
-Tests the real-world pattern of sending many URLs in a single API call.
+Tests the real-world pattern of sending many inputs in a single API call.
+Supports both URL-based platforms (Instagram, TikTok, YouTube) and
+query-based platforms (Reddit, Google News).
+
 Each platform runs in its own xdist group for parallel execution.
 
 Usage:
-    # All batch tests in parallel (3 workers)
-    pytest tests/e2e/test_batch.py -n 3 --dist loadgroup -v
+    # All batch tests in parallel (5 workers)
+    pytest tests/e2e/test_batch.py -n 5 --dist loadgroup -v
 
     # Single platform
     pytest tests/e2e/test_batch.py -k instagram -v
@@ -41,29 +44,40 @@ pytestmark = [pytest.mark.e2e, pytest.mark.batch]
 # ---------------------------------------------------------------------------
 
 
-def _extract_result_usernames(results: list[dict], platform: str) -> set[str]:
-    """Extract unique usernames/creators found in results."""
-    usernames: set[str] = set()
-    for r in results:
-        # Try common username fields
-        for field in ("ownerUsername", "author", "channelName", "authorMeta"):
-            val = r.get(field)
-            if isinstance(val, str) and val:
-                usernames.add(val.strip().lstrip("@").lower())
-            elif isinstance(val, dict):
-                # TikTok authorMeta has a 'name' sub-field
-                name = val.get("name", val.get("nickname", ""))
-                if name:
-                    usernames.add(str(name).strip().lstrip("@").lower())
+def _extract_result_identifiers(results: list[dict], platform: str) -> set[str]:
+    """Extract unique identifiers from results for coverage checking.
 
-        # Fall back to extracting from result URL
+    For URL-based platforms: extracts creator usernames.
+    For Reddit: extracts subreddit names (not post authors).
+    """
+    identifiers: set[str] = set()
+    for r in results:
+        if platform == "reddit":
+            # Reddit: extract subreddit names, not post authors
+            for field in ("subreddit", "communityName"):
+                val = r.get(field)
+                if isinstance(val, str) and val:
+                    identifiers.add(val.strip().lower())
+        else:
+            # URL-based platforms: try common username fields
+            for field in ("ownerUsername", "author", "channelName", "authorMeta"):
+                val = r.get(field)
+                if isinstance(val, str) and val:
+                    identifiers.add(val.strip().lstrip("@").lower())
+                elif isinstance(val, dict):
+                    # TikTok authorMeta has a 'name' sub-field
+                    name = val.get("name", val.get("nickname", ""))
+                    if name:
+                        identifiers.add(str(name).strip().lstrip("@").lower())
+
+        # URL-based extraction (works for all platforms with parseable URLs)
         result_url = r.get("url", "") or r.get("webVideoUrl", "")
         if result_url:
             uname = extract_username_from_url(result_url, platform)
             if uname:
-                usernames.add(uname)
+                identifiers.add(uname)
 
-    return usernames
+    return identifiers
 
 
 def _parse_result_date(result: dict, platform: str) -> datetime | None:
@@ -120,45 +134,57 @@ def _make_batch_params() -> list:
 
 
 @pytest.mark.parametrize("platform_name,batch_config", _make_batch_params())
-def test_batch_multi_url(
+def test_batch_multi_input(
     client: GoFetchClient,
     platform_name: str,
     batch_config: dict,
 ) -> None:
     """
-    Send 25 creator URLs + date filter in a single API call.
+    Send 25 inputs + optional date filter in a single API call.
+
+    Supports URL-based platforms (Instagram, TikTok, YouTube) and
+    query-based platforms (Reddit, Google News).
 
     Validates:
     1. Job completes with SUCCEEDED status
     2. Results are non-empty
-    3. Results come from multiple creators (not collapsed to one)
-    4. At least 15/25 creators have results (60% coverage)
-    5. Posted-at dates are within the date range (<=10% out-of-range tolerance)
+    3. Results come from multiple sources (not collapsed to one)
+    4. Source coverage meets minimum threshold (when applicable)
+    5. Posted-at dates within range (when date filter applied, <=10% tolerance)
     6. Result URLs are valid
     """
-    urls = batch_config["urls"]
-    url_key = batch_config["url_key"]
-    date_param = batch_config["date_param"]
     limit_key = batch_config["limit_key"]
-    min_coverage = batch_config["min_coverage"]
-
-    # #6: Date filter: 7 days ago (2 days was too tight for infrequent posters)
-    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=7)
-    cutoff_str = cutoff.strftime("%Y-%m-%d")
-
-    run_input = {
-        url_key: urls,
-        limit_key: 100,  # modest per-creator limit
-        date_param: cutoff_str,
-    }
-
+    limit_value = batch_config.get("limit_value", 100)
+    min_coverage = batch_config.get("min_coverage", 0)
+    date_param = batch_config.get("date_param")
     batch_timeout = batch_config["batch_timeout"]
 
+    # Build run_input — URL-based or query-based
+    is_url_based = "url_key" in batch_config
+    run_input: dict = {}
+
+    if is_url_based:
+        urls = batch_config["urls"]
+        run_input[batch_config["url_key"]] = urls
+        input_count = len(urls)
+    else:
+        queries = batch_config["queries"]
+        run_input["queries"] = queries
+        input_count = len(queries)
+
+    run_input[limit_key] = limit_value
+
+    # Date filter (only for platforms that support it)
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=7)
+    cutoff_str = cutoff.strftime("%Y-%m-%d")
+    if date_param:
+        run_input[date_param] = cutoff_str
+
     logger.info(
-        "Starting batch: platform=%s urls=%d date_filter=%s timeout=%ds",
+        "Starting batch: platform=%s inputs=%d date_filter=%s timeout=%ds",
         platform_name,
-        len(urls),
-        cutoff_str,
+        input_count,
+        cutoff_str if date_param else "none",
         batch_timeout,
     )
     t_start = time.monotonic()
@@ -189,72 +215,79 @@ def test_batch_multi_url(
 
     # Validation 2: Non-empty
     assert len(results) > 0, (
-        f"Batch job for {platform_name} returned zero results from {len(urls)} URLs."
+        f"Batch job for {platform_name} returned zero results from {input_count} inputs."
     )
 
-    logger.info("Batch %s: %d results from %d URLs", platform_name, len(results), len(urls))
+    logger.info("Batch %s: %d results from %d inputs", platform_name, len(results), input_count)
 
-    # Validation 3: Results from multiple creators
-    result_usernames = _extract_result_usernames(results, platform_name)
-    assert len(result_usernames) > 1, (
-        f"Batch results appear to come from only {len(result_usernames)} creator(s): "
-        f"{result_usernames}. Expected results from multiple creators."
+    # Validation 3: Results from multiple sources
+    result_identifiers = _extract_result_identifiers(results, platform_name)
+    assert len(result_identifiers) > 1, (
+        f"Batch results appear to come from only {len(result_identifiers)} source(s): "
+        f"{result_identifiers}. Expected results from multiple sources."
     )
 
-    # Validation 4: Creator coverage — at least min_coverage of 25 input URLs returned results
-    input_usernames = set()
-    for url in urls:
-        uname = extract_username_from_url(url, platform_name)
-        if uname:
-            input_usernames.add(uname)
+    # Validation 4: Source coverage (when min_coverage > 0 and input URLs available)
+    matched_count = 0
+    if min_coverage > 0 and "urls" in batch_config:
+        input_identifiers: set[str] = set()
+        for url in batch_config["urls"]:
+            uname = extract_username_from_url(url, platform_name)
+            if uname:
+                input_identifiers.add(uname)
 
-    matched_creators = input_usernames & result_usernames
-    assert len(matched_creators) >= min_coverage, (
-        f"Creator coverage too low: {len(matched_creators)}/{len(input_usernames)} "
-        f"(need at least {min_coverage}). "
-        f"Matched: {sorted(matched_creators)[:10]}... "
-        f"Missing: {sorted(input_usernames - result_usernames)[:10]}..."
-    )
+        matched = input_identifiers & result_identifiers
+        matched_count = len(matched)
+        assert matched_count >= min_coverage, (
+            f"Source coverage too low: {matched_count}/{len(input_identifiers)} "
+            f"(need at least {min_coverage}). "
+            f"Matched: {sorted(matched)[:10]}... "
+            f"Missing: {sorted(input_identifiers - result_identifiers)[:10]}..."
+        )
 
-    logger.info(
-        "Coverage: %d/%d creators matched (%d required)",
-        len(matched_creators),
-        len(input_usernames),
-        min_coverage,
-    )
-
-    # Validation 5: Date range check (<=10% out-of-range tolerance)
-    parseable = 0
-    out_of_range = 0
-    for r in results:
-        dt = _parse_result_date(r, platform_name)
-        if dt is not None:
-            parseable += 1
-            if dt < cutoff:
-                out_of_range += 1
-
-    if parseable > 0:
-        oor_ratio = out_of_range / parseable
         logger.info(
-            "Date check: %d parseable, %d out-of-range (%.1f%%)",
-            parseable,
-            out_of_range,
-            oor_ratio * 100,
+            "Coverage: %d/%d sources matched (%d required)",
+            matched_count,
+            len(input_identifiers),
+            min_coverage,
         )
-        assert oor_ratio <= 0.10, (
-            f"DATE RANGE: {out_of_range}/{parseable} results ({oor_ratio:.0%}) are older than "
-            f"cutoff {cutoff_str}. Tolerance is 10%."
-        )
-    else:
-        logger.warning(
-            "No parseable dates found in %d results — skipping date range validation",
-            len(results),
-        )
+
+    # Validation 5: Date range check (only when date filter was applied)
+    if date_param:
+        parseable = 0
+        out_of_range = 0
+        for r in results:
+            dt = _parse_result_date(r, platform_name)
+            if dt is not None:
+                parseable += 1
+                if dt < cutoff:
+                    out_of_range += 1
+
+        if parseable > 0:
+            oor_ratio = out_of_range / parseable
+            logger.info(
+                "Date check: %d parseable, %d out-of-range (%.1f%%)",
+                parseable,
+                out_of_range,
+                oor_ratio * 100,
+            )
+            assert oor_ratio <= 0.10, (
+                f"DATE RANGE: {out_of_range}/{parseable} results ({oor_ratio:.0%}) are older "
+                f"than cutoff {cutoff_str}. Tolerance is 10%."
+            )
+        else:
+            logger.warning(
+                "No parseable dates found in %d results — skipping date range validation",
+                len(results),
+            )
 
     # Validation 6: URL validity
     result_urls = [r.get("url", "") for r in results if r.get("url")]
     if result_urls:
-        invalid = [u for u in result_urls if not (isinstance(u, str) and u.startswith("http") and len(u) > 10)]
+        invalid = [
+            u for u in result_urls
+            if not (isinstance(u, str) and u.startswith("http") and len(u) > 10)
+        ]
         invalid_ratio = len(invalid) / len(result_urls) if result_urls else 0
         assert invalid_ratio <= 0.20, (
             f"INVALID URLS: {len(invalid)}/{len(result_urls)} result URLs are invalid "
@@ -262,9 +295,9 @@ def test_batch_multi_url(
         )
 
     logger.info(
-        "PASS: batch-%s → %d results, %d creators, %.1fs",
+        "PASS: batch-%s → %d results, %d sources, %.1fs",
         platform_name,
         len(results),
-        len(matched_creators),
+        matched_count if min_coverage > 0 else len(result_identifiers),
         elapsed,
     )

@@ -18,6 +18,10 @@ RESULT_TIERS: list[int] = [10, 25, 50, 100, 250, 500, 1000, 2000, 3000]
 QUICK_TIERS: list[int] = [10, 50, 100]
 MEDIUM_TIERS: list[int] = [10, 50, 100, 500, 1000]
 
+# Per-platform tier overrides — skip tiers above platform ceiling
+REDDIT_TIERS: list[int] = [10, 25, 50, 100, 250, 500]  # ceiling ~950
+GOOGLE_NEWS_TIERS: list[int] = [10, 25, 50, 100]  # ceiling ~100-219
+
 # ---------------------------------------------------------------------------
 # Timeouts (seconds) — scale with result tier
 # ---------------------------------------------------------------------------
@@ -166,6 +170,7 @@ PLATFORMS: dict[str, dict] = {
         "single_document": True,  # returns exactly 1 profile doc regardless of limit
         "min_result_ratio": 0.0,
         "timeout_per_100": 30,
+        "tiers": [10],  # single-document — every tier returns the same 1 doc
     },
     "instagram_posts": {
         "scraper_type": "instagram_posts",
@@ -203,6 +208,7 @@ PLATFORMS: dict[str, dict] = {
         "min_result_ratio": 0.5,
         "platform_max_results": 950,  # #4: Reddit caps at ~1000 posts per query
         "timeout_per_100": 30,
+        "tiers": REDDIT_TIERS,
     },
     "google_news": {
         "scraper_type": "google_news",
@@ -213,6 +219,7 @@ PLATFORMS: dict[str, dict] = {
         "min_result_ratio": 0.3,
         "platform_max_results": 100,  # #5: RSS feeds cap at ~100-219 articles
         "timeout_per_100": 30,
+        "tiers": GOOGLE_NEWS_TIERS,
     },
 }
 
@@ -256,6 +263,8 @@ PLATFORM_TIMESTAMP_FIELDS: dict[str, list[str]] = {
     "instagram": ["timestamp", "postedAt"],
     "tiktok": ["createTime", "postedAt"],
     "youtube": ["date", "postedAt", "uploadDate"],
+    "reddit": ["createdAt", "timestamp"],
+    "google_news": ["publishedAt", "date"],
 }
 
 # ---------------------------------------------------------------------------
@@ -346,6 +355,62 @@ YOUTUBE_BATCH_URLS: list[str] = [
     "https://www.youtube.com/@LinusTechTips",
 ]
 
+REDDIT_BATCH_QUERIES: list[dict[str, str]] = [
+    {"profileUrl": "https://www.reddit.com/r/technology/", "searchQuery": "technology"},
+    {"profileUrl": "https://www.reddit.com/r/science/", "searchQuery": "science"},
+    {"profileUrl": "https://www.reddit.com/r/worldnews/", "searchQuery": "world news"},
+    {"profileUrl": "https://www.reddit.com/r/programming/", "searchQuery": "programming"},
+    {"profileUrl": "https://www.reddit.com/r/datascience/", "searchQuery": "data science"},
+    {"profileUrl": "https://www.reddit.com/r/MachineLearning/", "searchQuery": "machine learning"},
+    {"profileUrl": "https://www.reddit.com/r/artificial/", "searchQuery": "AI"},
+    {"profileUrl": "https://www.reddit.com/r/gaming/", "searchQuery": "gaming"},
+    {"profileUrl": "https://www.reddit.com/r/movies/", "searchQuery": "movies"},
+    {"profileUrl": "https://www.reddit.com/r/music/", "searchQuery": "music"},
+    {"profileUrl": "https://www.reddit.com/r/sports/", "searchQuery": "sports"},
+    {"profileUrl": "https://www.reddit.com/r/news/", "searchQuery": "news"},
+    {"profileUrl": "https://www.reddit.com/r/space/", "searchQuery": "space"},
+    {"profileUrl": "https://www.reddit.com/r/gadgets/", "searchQuery": "gadgets"},
+    {"profileUrl": "https://www.reddit.com/r/Futurology/", "searchQuery": "future"},
+    {"profileUrl": "https://www.reddit.com/r/Documentaries/", "searchQuery": "documentaries"},
+    {"profileUrl": "https://www.reddit.com/r/books/", "searchQuery": "books"},
+    {"profileUrl": "https://www.reddit.com/r/Fitness/", "searchQuery": "fitness"},
+    {"profileUrl": "https://www.reddit.com/r/food/", "searchQuery": "food"},
+    {"profileUrl": "https://www.reddit.com/r/travel/", "searchQuery": "travel"},
+    {"profileUrl": "https://www.reddit.com/r/photography/", "searchQuery": "photography"},
+    {"profileUrl": "https://www.reddit.com/r/Art/", "searchQuery": "art"},
+    {"profileUrl": "https://www.reddit.com/r/DIY/", "searchQuery": "DIY"},
+    {"profileUrl": "https://www.reddit.com/r/EarthPorn/", "searchQuery": "nature"},
+    {"profileUrl": "https://www.reddit.com/r/history/", "searchQuery": "history"},
+]
+
+GOOGLE_NEWS_BATCH_QUERIES: list[str] = [
+    "technology",
+    "artificial intelligence",
+    "sports",
+    "politics",
+    "health",
+    "entertainment",
+    "business",
+    "climate change",
+    "cryptocurrency",
+    "space exploration",
+    "education",
+    "cybersecurity",
+    "electric vehicles",
+    "renewable energy",
+    "stock market",
+    "real estate",
+    "travel",
+    "food safety",
+    "mental health",
+    "robotics",
+    "quantum computing",
+    "social media",
+    "startup funding",
+    "video games",
+    "science",
+]
+
 BATCH_PLATFORMS: dict[str, dict] = {
     "instagram": {
         "urls": INSTAGRAM_BATCH_URLS,
@@ -370,6 +435,24 @@ BATCH_PLATFORMS: dict[str, dict] = {
         "limit_key": "videosLimit",
         "min_coverage": 12,  # #6: relaxed from 15
         "batch_timeout": 3600,  # #10: YouTube batch needs more time (25 channels)
+    },
+    "reddit": {
+        "queries": REDDIT_BATCH_QUERIES,
+        # URLs derived from queries — used for coverage checking
+        "urls": [q["profileUrl"] for q in REDDIT_BATCH_QUERIES],
+        "limit_key": "postsLimit",
+        "limit_value": 25,  # per query — 25 queries x 25 posts = 625 total
+        "date_param": None,
+        "min_coverage": 15,
+        "batch_timeout": 1800,
+    },
+    "google_news": {
+        "queries": GOOGLE_NEWS_BATCH_QUERIES,
+        "limit_key": "resultsLimit",
+        "limit_value": 50,  # per query — 25 queries x 50 results = 1250 total
+        "date_param": None,
+        "min_coverage": 0,  # can't reliably match query terms to article URLs
+        "batch_timeout": 1200,
     },
 }
 
