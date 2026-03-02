@@ -3,7 +3,7 @@ E2E webhook tests — verify webhook delivery via ngrok tunnel.
 
 Requires:
   GOFETCH_API_KEY    — API key
-  pyngrok            — pip install pyngrok
+  ngrok              — ngrok CLI installed on PATH
 
 Usage:
     pytest tests/e2e/test_webhook_e2e.py -v -m webhook
@@ -13,10 +13,9 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import TYPE_CHECKING
 
 import pytest
-
-from gofetch import GoFetchClient
 
 from .config import (
     PLATFORMS,
@@ -24,7 +23,11 @@ from .config import (
     build_run_input,
     timeout_for_tier,
 )
-from .conftest import WebhookStore
+
+if TYPE_CHECKING:
+    from gofetch import GoFetchClient
+
+    from .conftest import WebhookStore
 
 logger = logging.getLogger("e2e.webhooks")
 
@@ -337,7 +340,7 @@ def test_webhook_event_sequence(
 
     # Wait a bit for all events to arrive
     time.sleep(5)
-    terminal = fresh_webhook_store.wait_for_terminal(
+    fresh_webhook_store.wait_for_terminal(
         job_id, timeout=WEBHOOK_RECEIVE_TIMEOUT
     )
 

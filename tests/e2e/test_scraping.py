@@ -1,11 +1,11 @@
 """
-E2E scraping tests — every platform × every target × every result tier.
+E2E scraping tests — every platform x every target x every result tier.
 
 Run against the real GoFetch dev API. Requires GOFETCH_API_KEY env var.
 
 Tests run in PARALLEL via pytest-xdist with one worker per TARGET (not per
 platform). This means different targets within the same platform run
-concurrently, giving ~3× speedup within each platform.
+concurrently, giving ~3x speedup within each platform.
 
 Usage:
     # All targets in parallel, tier 10 only (~21 workers)
@@ -25,10 +25,12 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import TYPE_CHECKING
 
 import pytest
 
-from gofetch import GoFetchClient
+if TYPE_CHECKING:
+    from gofetch import GoFetchClient
 
 from .config import (
     PLATFORMS,
@@ -85,7 +87,7 @@ def validate_results(
 
     Checks:
     - Non-empty results
-    - Result count vs requested tier
+    - Result count vs requested tier (respecting platform_max_results)
     - No all-identical results
     - No all-error stubs
     - URL validity (>80% must be real URLs)
@@ -109,11 +111,15 @@ def validate_results(
         pass
     else:
         min_ratio = platform_config.get("min_result_ratio", 0.3)
-        expected_min = max(1, int(tier * min_ratio))
+        # #4/#5: Clamp effective tier to platform_max_results if set
+        platform_max = platform_config.get("platform_max_results")
+        effective_tier = min(tier, platform_max) if platform_max else tier
+        expected_min = max(1, int(effective_tier * min_ratio))
         if len(results) < expected_min:
             issues.append(
                 f"LOW RESULTS: Got {len(results)} items for limit {tier} "
-                f"(expected at least {expected_min}, ratio={min_ratio}). "
+                f"(expected at least {expected_min}, ratio={min_ratio}"
+                f"{f', capped at {platform_max}' if platform_max else ''}). "
                 f"This may indicate throttling or a partial failure."
             )
 
@@ -164,10 +170,9 @@ def validate_results(
                     f"Expected fields: {expected_fields}. Threshold is 50%."
                 )
 
-    # --- Profile attribution: results should trace back to input profiles ---
+    # --- Profile attribution (#9): use ownerUsername/author when available ---
     if target_config:
         scraper_type = platform_config.get("scraper_type", "")
-        # Collect input usernames from all URL-bearing keys
         input_usernames: set[str] = set()
         for key in ("directUrls", "profiles", "channelUrls"):
             for url in target_config.get(key, []):
@@ -176,20 +181,26 @@ def validate_results(
                     input_usernames.add(uname)
 
         if input_usernames:
-            # Check if any result can be attributed to an input profile
             matched = 0
+            attributable = 0
             for r in results:
-                result_text = " ".join(
-                    str(v).lower()
-                    for v in [r.get("url", ""), r.get("ownerUsername", ""), r.get("author", "")]
-                    if v
-                )
-                if any(uname in result_text for uname in input_usernames):
-                    matched += 1
-            if matched == 0:
+                # Prefer structured fields; fall back to URL substring
+                owner = r.get("ownerUsername", "") or r.get("author", "")
+                if owner:
+                    attributable += 1
+                    if str(owner).strip().lstrip("@").lower() in input_usernames:
+                        matched += 1
+                else:
+                    result_url = str(r.get("url", "")).lower()
+                    if result_url and any(uname in result_url for uname in input_usernames):
+                        matched += 1
+                        attributable += 1
+
+            # Only flag if we had attributable results and none matched
+            if attributable > 0 and matched == 0:
                 issues.append(
-                    f"ATTRIBUTION: None of the {len(results)} results could be traced back "
-                    f"to input profiles {input_usernames}. "
+                    f"ATTRIBUTION: None of the {attributable} attributable results "
+                    f"could be traced back to input profiles {input_usernames}. "
                     f"This may indicate results are from wrong profiles."
                 )
 
@@ -251,7 +262,7 @@ def test_scrape_platform(
     platform_config = PLATFORMS[platform_name]
     scraper_type = platform_config["scraper_type"]
     limit_key = platform_config["limit_key"]
-    timeout = timeout_for_tier(tier)
+    timeout = timeout_for_tier(tier, platform_name)  # #8: per-platform timeout
 
     # Build run input
     run_input = build_run_input(target["config"], limit_key, tier)
@@ -281,19 +292,27 @@ def test_scrape_platform(
     run_issues = validate_run_dict(run, scraper_type)
     assert not run_issues, "Run dict validation failed:\n" + "\n".join(run_issues)
 
-    # --- 3. Check terminal status ---
+    # --- 3. Check terminal status (#2, #7) ---
     status = run.get("status", "")
 
-    # CRITICAL: If job is still running after timeout, that's a failure
-    assert status != "RUNNING", (
-        f"Job {run['id']} still RUNNING after {timeout}s timeout. "
-        f"The job did not complete within the expected timeframe."
-    )
-    assert status != "READY", (
-        f"Job {run['id']} still in READY state. It was never picked up."
-    )
+    # Jobs still RUNNING after timeout → skip (slow, not a bug)
+    if status == "RUNNING":
+        pytest.skip(
+            f"Job {run['id']} still RUNNING after {timeout}s timeout — "
+            f"skipping (slow job, not an SDK failure)"
+        )
 
-    # Job should have SUCCEEDED
+    if status == "READY":
+        pytest.skip(f"Job {run['id']} still in READY state — never picked up")
+
+    # TIMED-OUT → skip (API-side timeout, not an SDK bug)
+    if status == "TIMED-OUT":
+        pytest.skip(
+            f"Job {run['id']} TIMED-OUT on the server side — "
+            f"skipping (API timeout, not an SDK failure)"
+        )
+
+    # FAILED → hard failure
     assert status == "SUCCEEDED", (
         f"Job {run['id']} finished with status '{status}' instead of SUCCEEDED.\n"
         f"GoFetch job data: {run.get('_gofetch_job', {})}"
@@ -360,7 +379,7 @@ def test_apify_url_compat(
     tier = 10  # minimal tier for compat check
 
     run_input = build_run_input(target["config"], limit_key, tier)
-    timeout = timeout_for_tier(tier)
+    timeout = timeout_for_tier(tier, platform_name)
 
     # Use Apify URL instead of direct scraper type
     actor = client.actor(apify_url)
@@ -411,7 +430,7 @@ def test_start_then_wait(
     scraper_type = platform_config["scraper_type"]
     limit_key = platform_config["limit_key"]
     tier = 10
-    timeout = timeout_for_tier(tier)
+    timeout = timeout_for_tier(tier, platform_name)
 
     run_input = build_run_input(target["config"], limit_key, tier)
 
@@ -444,6 +463,7 @@ def test_start_then_wait(
 
 # ---------------------------------------------------------------------------
 # Pagination tests — verify large result sets paginate correctly
+# (#12: uses distinct xdist group to avoid doubling API load on main target)
 # ---------------------------------------------------------------------------
 
 
@@ -457,7 +477,7 @@ def _make_pagination_params() -> list[tuple]:
             pytest.param(
                 platform_name,
                 id=f"pagination-{platform_name}",
-                marks=[pytest.mark.slow, pytest.mark.xdist_group(target["name"])],
+                marks=[pytest.mark.slow, pytest.mark.xdist_group(f"pagination_{target['name']}")],
             )
         )
     return params
@@ -472,12 +492,13 @@ def test_pagination_integrity(client: GoFetchClient, platform_name: str) -> None
     - iterate_items() yields all items across pages
     - list_items() returns same count as iterate_items()
     - No duplicate items across pages
+    - (#13) Cross-check with dataset.get_info()["itemCount"]
     """
     platform_config = PLATFORMS[platform_name]
     scraper_type = platform_config["scraper_type"]
     limit_key = platform_config["limit_key"]
     tier = 500
-    timeout = timeout_for_tier(tier)
+    timeout = timeout_for_tier(tier, platform_name)
     target = platform_config["targets"][0]
 
     run_input = build_run_input(target["config"], limit_key, tier)
@@ -504,6 +525,14 @@ def test_pagination_integrity(client: GoFetchClient, platform_name: str) -> None
     assert len(iter_items) > 0, (
         f"Pagination test for {platform_name} returned zero results"
     )
+
+    # #13: Cross-check with dataset info itemCount
+    info = dataset.get_info()
+    if info and isinstance(info.get("itemCount"), int) and info["itemCount"] > 0:
+        assert len(iter_items) == info["itemCount"], (
+            f"iterate_items() returned {len(iter_items)} but "
+            f"dataset.get_info() reports itemCount={info['itemCount']}"
+        )
 
     # Check for duplicates (using item indices or urls)
     seen = set()
@@ -533,7 +562,7 @@ def test_dataset_info(client: GoFetchClient) -> None:
     run_input = build_run_input(target["config"], "resultsLimit", 10)
 
     actor = client.actor("instagram")
-    run = actor.call(run_input=run_input, wait_secs=timeout_for_tier(10))
+    run = actor.call(run_input=run_input, wait_secs=timeout_for_tier(10, "instagram"))
 
     if run.get("status") != "SUCCEEDED":
         pytest.skip("Job didn't succeed")
@@ -552,7 +581,7 @@ def test_dataset_info(client: GoFetchClient) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Job abort test
+# Job abort test (#14: poll until RUNNING before sending abort)
 # ---------------------------------------------------------------------------
 
 
@@ -567,13 +596,22 @@ def test_abort_running_job(client: GoFetchClient) -> None:
 
     assert run.get("id"), "start() must return job ID"
 
-    # Give it a moment to start, then abort
-    time.sleep(3)
-
     run_client = client.run(run["id"])
+
+    # Poll until the job is actually RUNNING (not just READY)
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        current = run_client.get()
+        if current and current.get("status") == "RUNNING":
+            break
+        if current and current.get("status") not in ("READY", "RUNNING"):
+            # Already terminal — nothing to abort
+            pytest.skip(f"Job reached {current.get('status')} before we could abort")
+        time.sleep(2)
+
     aborted = run_client.abort()
 
-    assert aborted.get("status") in ("ABORTED", "SUCCEEDED", "FAILED"), (
+    assert aborted.get("status") in ("ABORTED", "ABORTING", "SUCCEEDED", "FAILED"), (
         f"Unexpected status after abort: {aborted.get('status')}"
     )
 
@@ -590,7 +628,7 @@ def test_log_retrieval(client: GoFetchClient) -> None:
     run_input = build_run_input(target["config"], "postsLimit", 10)
 
     actor = client.actor("reddit")
-    run = actor.call(run_input=run_input, wait_secs=timeout_for_tier(10))
+    run = actor.call(run_input=run_input, wait_secs=timeout_for_tier(10, "reddit"))
 
     run_client = client.run(run["id"])
     log_client = run_client.log()

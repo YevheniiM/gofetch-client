@@ -17,14 +17,15 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 
 import pytest
 
-from gofetch import GoFetchClient
+if TYPE_CHECKING:
+    from gofetch import GoFetchClient
 
 from .config import (
     BATCH_PLATFORMS,
-    BATCH_TIMEOUT,
     PLATFORM_TIMESTAMP_FIELDS,
     extract_username_from_url,
 )
@@ -141,8 +142,8 @@ def test_batch_multi_url(
     limit_key = batch_config["limit_key"]
     min_coverage = batch_config["min_coverage"]
 
-    # Date filter: 2 days ago
-    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=2)
+    # #6: Date filter: 7 days ago (2 days was too tight for infrequent posters)
+    cutoff = datetime.now(tz=timezone.utc) - timedelta(days=7)
     cutoff_str = cutoff.strftime("%Y-%m-%d")
 
     run_input = {
@@ -151,18 +152,20 @@ def test_batch_multi_url(
         date_param: cutoff_str,
     }
 
+    batch_timeout = batch_config["batch_timeout"]
+
     logger.info(
         "Starting batch: platform=%s urls=%d date_filter=%s timeout=%ds",
         platform_name,
         len(urls),
         cutoff_str,
-        BATCH_TIMEOUT,
+        batch_timeout,
     )
     t_start = time.monotonic()
 
     # --- 1. Create and run job ---
     actor = client.actor(platform_name)
-    run = actor.call(run_input=run_input, wait_secs=BATCH_TIMEOUT)
+    run = actor.call(run_input=run_input, wait_secs=batch_timeout)
 
     elapsed = time.monotonic() - t_start
     logger.info(

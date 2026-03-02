@@ -22,7 +22,7 @@ MEDIUM_TIERS: list[int] = [10, 50, 100, 500, 1000]
 # Timeouts (seconds) — scale with result tier
 # ---------------------------------------------------------------------------
 BASE_TIMEOUT = 600  # 10 min — containers scale to 0, cold start can take several minutes
-TIMEOUT_PER_100_ITEMS = 30  # +30s per 100 items requested
+DEFAULT_TIMEOUT_PER_100 = 30  # +30s per 100 items requested (default)
 MAX_TIMEOUT = 1800  # 30 min hard cap
 WEBHOOK_RECEIVE_TIMEOUT = 120  # 2 min to receive webhook after job completes
 
@@ -154,7 +154,8 @@ PLATFORMS: dict[str, dict] = {
         "targets": INSTAGRAM_TARGETS,
         "limit_key": "resultsLimit",
         "expected_fields": ["url", "type"],
-        "min_result_ratio": 0.5,  # expect at least 50% of requested limit
+        "min_result_ratio": 0.5,
+        "timeout_per_100": 30,
     },
     "instagram_profile": {
         "scraper_type": "instagram_profile",
@@ -162,16 +163,18 @@ PLATFORMS: dict[str, dict] = {
         "targets": INSTAGRAM_PROFILE_TARGETS,
         "limit_key": "resultsLimit",
         "expected_fields": ["url"],
-        "single_document": True,  # profile mode returns exactly 1 profile doc regardless of limit
-        "min_result_ratio": 0.0,  # not applicable — single document mode
+        "single_document": True,  # returns exactly 1 profile doc regardless of limit
+        "min_result_ratio": 0.0,
+        "timeout_per_100": 30,
     },
     "instagram_posts": {
         "scraper_type": "instagram_posts",
-        "apify_url": None,  # no Apify URL mapping
+        "apify_url": None,
         "targets": INSTAGRAM_POSTS_TARGETS,
         "limit_key": "resultsLimit",
         "expected_fields": ["url"],
         "min_result_ratio": 0.5,
+        "timeout_per_100": 30,
     },
     "tiktok": {
         "scraper_type": "tiktok",
@@ -180,6 +183,7 @@ PLATFORMS: dict[str, dict] = {
         "limit_key": "videosLimit",
         "expected_fields": ["webVideoUrl"],
         "min_result_ratio": 0.3,
+        "timeout_per_100": 60,  # #8: TikTok needs more time per 100 items
     },
     "youtube": {
         "scraper_type": "youtube",
@@ -188,6 +192,7 @@ PLATFORMS: dict[str, dict] = {
         "limit_key": "videosLimit",
         "expected_fields": ["url"],
         "min_result_ratio": 0.3,
+        "timeout_per_100": 60,  # #8: YouTube needs more time per 100 items
     },
     "reddit": {
         "scraper_type": "reddit",
@@ -196,6 +201,8 @@ PLATFORMS: dict[str, dict] = {
         "limit_key": "postsLimit",
         "expected_fields": ["url"],
         "min_result_ratio": 0.5,
+        "platform_max_results": 950,  # #4: Reddit caps at ~1000 posts per query
+        "timeout_per_100": 30,
     },
     "google_news": {
         "scraper_type": "google_news",
@@ -204,29 +211,27 @@ PLATFORMS: dict[str, dict] = {
         "limit_key": "resultsLimit",
         "expected_fields": ["url"],
         "min_result_ratio": 0.3,
+        "platform_max_results": 100,  # #5: RSS feeds cap at ~100-219 articles
+        "timeout_per_100": 30,
     },
 }
 
-
-# ---------------------------------------------------------------------------
-# Webhook event expectations per terminal status
-# ---------------------------------------------------------------------------
-
-EXPECTED_WEBHOOK_EVENTS = {
-    "SUCCEEDED": ["job.created", "job.started", "job.completed"],
-    "FAILED": ["job.created", "job.started", "job.failed"],
-    "TIMED-OUT": ["job.created", "job.started", "job.timed_out"],
-    "ABORTED": ["job.created", "job.cancelled"],
-}
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def timeout_for_tier(tier: int) -> int:
-    """Calculate appropriate timeout for a given result tier."""
-    timeout = BASE_TIMEOUT + (tier / 100) * TIMEOUT_PER_100_ITEMS
+def timeout_for_tier(tier: int, platform_name: str | None = None) -> int:
+    """Calculate appropriate timeout for a given result tier.
+
+    Uses per-platform timeout_per_100 when platform_name is provided (#8).
+    """
+    per_100 = DEFAULT_TIMEOUT_PER_100
+    if platform_name:
+        config = PLATFORMS.get(platform_name, {})
+        per_100 = config.get("timeout_per_100", DEFAULT_TIMEOUT_PER_100)
+    timeout = BASE_TIMEOUT + (tier / 100) * per_100
     return min(int(timeout), MAX_TIMEOUT)
 
 
@@ -256,8 +261,6 @@ PLATFORM_TIMESTAMP_FIELDS: dict[str, list[str]] = {
 # ---------------------------------------------------------------------------
 # Batch test configuration — 25 URLs per platform
 # ---------------------------------------------------------------------------
-
-BATCH_TIMEOUT = 1800  # 30 min for batch jobs (25 URLs can take a while)
 
 INSTAGRAM_BATCH_URLS: list[str] = [
     "https://www.instagram.com/kyliejenner/",
@@ -349,23 +352,29 @@ BATCH_PLATFORMS: dict[str, dict] = {
         "url_key": "directUrls",
         "date_param": "onlyPostsNewerThan",
         "limit_key": "resultsLimit",
-        "min_coverage": 15,  # at least 15/25 creators should have results
+        "min_coverage": 12,  # #6: relaxed from 15 — infrequent posters may have 0 results
+        "batch_timeout": 1800,
     },
     "tiktok": {
         "urls": TIKTOK_BATCH_URLS,
         "url_key": "profiles",
         "date_param": "oldestPostDate",
         "limit_key": "videosLimit",
-        "min_coverage": 15,
+        "min_coverage": 12,  # #6: relaxed from 15
+        "batch_timeout": 1800,
     },
     "youtube": {
         "urls": YOUTUBE_BATCH_URLS,
         "url_key": "channelUrls",
         "date_param": "oldestPostDate",
         "limit_key": "videosLimit",
-        "min_coverage": 15,
+        "min_coverage": 12,  # #6: relaxed from 15
+        "batch_timeout": 3600,  # #10: YouTube batch needs more time (25 channels)
     },
 }
+
+# Instagram path segments that are NOT usernames
+_INSTAGRAM_NON_USER_SEGMENTS = {"p", "reel", "reels", "stories", "tv", "explore", "accounts"}
 
 
 def extract_username_from_url(url: str, platform: str) -> str | None:
@@ -380,8 +389,9 @@ def extract_username_from_url(url: str, platform: str) -> str | None:
 
     if platform in ("instagram", "instagram_profile", "instagram_posts"):
         # https://www.instagram.com/kyliejenner/ → kyliejenner
+        # Guard against post URLs: /p/shortcode/, /reel/..., /stories/...  (#3)
         parts = path.split("/")
-        if parts and parts[0]:
+        if parts and parts[0] and parts[0].lower() not in _INSTAGRAM_NON_USER_SEGMENTS:
             return parts[0].lower()
 
     elif platform == "tiktok":
