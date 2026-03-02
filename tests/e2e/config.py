@@ -7,20 +7,37 @@ and validation rules for end-to-end testing against the real GoFetch API.
 
 from __future__ import annotations
 
+import os
 import re
 from urllib.parse import urlparse
 
 # ---------------------------------------------------------------------------
 # Result-count tiers (min → max)
 # ---------------------------------------------------------------------------
-RESULT_TIERS: list[int] = [10, 25, 50, 100, 250, 500, 1000, 2000, 3000]
+# TIER_MODE env var selects which tier set to run:
+#   quick  — smoke test (3 tiers)
+#   medium — CI / standard (5 tiers)
+#   full   — nightly / pre-release (6 tiers, default)
 
-QUICK_TIERS: list[int] = [10, 50, 100]
-MEDIUM_TIERS: list[int] = [10, 50, 100, 500, 1000]
+_TIER_MODE = os.environ.get("TIER_MODE", "full").lower()
+
+_FULL_TIERS: list[int] = [10, 50, 250, 1000, 2000, 3000]
+_MEDIUM_TIERS: list[int] = [10, 50, 250, 1000, 2000]
+_QUICK_TIERS: list[int] = [10, 50, 250]
+
+RESULT_TIERS: list[int] = {
+    "quick": _QUICK_TIERS,
+    "medium": _MEDIUM_TIERS,
+    "full": _FULL_TIERS,
+}.get(_TIER_MODE, _FULL_TIERS)
+
+# Tiers above this threshold test volume scaling, not account diversity —
+# only the first target per platform runs them.
+HIGH_TIER_THRESHOLD = 250
 
 # Per-platform tier overrides — skip tiers above platform ceiling
-REDDIT_TIERS: list[int] = [10, 25, 50, 100, 250, 500]  # ceiling ~950
-GOOGLE_NEWS_TIERS: list[int] = [10, 25, 50, 100]  # ceiling ~100-219
+REDDIT_TIERS: list[int] = [10, 50, 250, 500]  # ceiling ~950
+GOOGLE_NEWS_TIERS: list[int] = [10, 50, 100]  # ceiling ~100-219
 
 # ---------------------------------------------------------------------------
 # Timeouts (seconds) — scale with result tier
@@ -417,6 +434,7 @@ BATCH_PLATFORMS: dict[str, dict] = {
         "url_key": "directUrls",
         "date_param": "onlyPostsNewerThan",
         "limit_key": "resultsLimit",
+        "limit_value": 10,  # 25 URLs x 10 = 250 items (tests multi-input, not volume)
         "min_coverage": 12,  # #6: relaxed from 15 — infrequent posters may have 0 results
         "batch_timeout": 1800,
     },
@@ -425,6 +443,7 @@ BATCH_PLATFORMS: dict[str, dict] = {
         "url_key": "profiles",
         "date_param": "oldestPostDate",
         "limit_key": "videosLimit",
+        "limit_value": 10,  # 25 URLs x 10 = 250 items
         "min_coverage": 12,  # #6: relaxed from 15
         "batch_timeout": 1800,
     },
@@ -433,6 +452,7 @@ BATCH_PLATFORMS: dict[str, dict] = {
         "url_key": "channelUrls",
         "date_param": "oldestPostDate",
         "limit_key": "videosLimit",
+        "limit_value": 10,  # 25 URLs x 10 = 250 items
         "min_coverage": 12,  # #6: relaxed from 15
         "batch_timeout": 3600,  # #10: YouTube batch needs more time (25 channels)
     },
@@ -441,7 +461,7 @@ BATCH_PLATFORMS: dict[str, dict] = {
         # URLs derived from queries — used for coverage checking
         "urls": [q["profileUrl"] for q in REDDIT_BATCH_QUERIES],
         "limit_key": "postsLimit",
-        "limit_value": 25,  # per query — 25 queries x 25 posts = 625 total
+        "limit_value": 10,  # 25 queries x 10 posts = 250 total
         "date_param": None,
         "min_coverage": 15,
         "batch_timeout": 1800,
@@ -449,7 +469,7 @@ BATCH_PLATFORMS: dict[str, dict] = {
     "google_news": {
         "queries": GOOGLE_NEWS_BATCH_QUERIES,
         "limit_key": "resultsLimit",
-        "limit_value": 50,  # per query — 25 queries x 50 results = 1250 total
+        "limit_value": 25,  # 25 queries x 25 results = 625 total
         "date_param": None,
         "min_coverage": 0,  # can't reliably match query terms to article URLs
         "batch_timeout": 1200,

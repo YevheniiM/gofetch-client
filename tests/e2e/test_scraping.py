@@ -220,11 +220,21 @@ def _make_test_params() -> list[tuple]:
     tiktok_mrbeast each get their own worker).  Tiers for the same target
     run sequentially within that worker, which avoids overwhelming the API
     with concurrent requests for the same account.
+
+    High tiers (above HIGH_TIER_THRESHOLD) only run on the first target per
+    platform — they test volume scaling, not account diversity.
     """
+    from .config import HIGH_TIER_THRESHOLD
+
     params = []
     for platform_name, platform_config in PLATFORMS.items():
-        for target in platform_config["targets"]:
-            for tier in platform_config.get("tiers", RESULT_TIERS):
+        targets = platform_config["targets"]
+        tiers = platform_config.get("tiers", RESULT_TIERS)
+        for idx, target in enumerate(targets):
+            for tier in tiers:
+                # High tiers only run on first target — saves ~47K items
+                if tier > HIGH_TIER_THRESHOLD and idx > 0:
+                    continue
                 marks = [pytest.mark.xdist_group(target["name"])]
                 if tier >= 500:
                     marks.append(pytest.mark.slow)
@@ -591,7 +601,7 @@ def test_dataset_info(client: GoFetchClient) -> None:
 def test_abort_running_job(client: GoFetchClient) -> None:
     """Start a large job and abort it mid-flight."""
     target = PLATFORMS["instagram"]["targets"][0]
-    run_input = build_run_input(target["config"], "resultsLimit", 3000)
+    run_input = build_run_input(target["config"], "resultsLimit", 500)
 
     actor = client.actor("instagram")
     run = actor.start(run_input=run_input)
