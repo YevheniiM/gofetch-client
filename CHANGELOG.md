@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-03-08
+
+### Fixed
+
+- Aligned all base URL defaults to `https://go-fetch.io` (removed stale `api.go-fetch.io` references)
+- CI workflows now exclude E2E tests (E2E runs locally only)
+- E2E test improvements: eliminated redundant jobs, added Reddit/Google News batch tests, fixed single-document scraper validation
+- Reduced E2E API cost ~67% by trimming item counts and job matrix
+
 ## [0.2.0] - 2026-02-28
 
 ### Added
