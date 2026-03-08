@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Generator
+from collections.abc import Generator
+from typing import Any
 
 import pytest
 
@@ -17,7 +18,7 @@ def api_key() -> str:
 
 @pytest.fixture
 def base_url() -> str:
-    return os.environ.get("GOFETCH_BASE_URL", "https://api.go-fetch.io")
+    return os.environ.get("GOFETCH_BASE_URL", "https://go-fetch.io")
 
 
 @pytest.fixture

@@ -77,7 +77,7 @@ class GoFetchClient:
         Args:
             api_key: GoFetch API key (format: sk_scr_...)
             token: Alias for api_key (for Apify compatibility)
-            base_url: API base URL (default: https://api.go-fetch.io)
+            base_url: API base URL (default: https://go-fetch.io)
             timeout: Request timeout in seconds (default: 30)
             max_retries: Maximum retries for failed requests (default: 3)
 

@@ -436,7 +436,7 @@ BATCH_PLATFORMS: dict[str, dict] = {
         "limit_key": "resultsLimit",
         "limit_value": 10,  # 25 URLs x 10 = 250 items (tests multi-input, not volume)
         "min_coverage": 12,  # #6: relaxed from 15 — infrequent posters may have 0 results
-        "batch_timeout": 1800,
+        "batch_timeout": 3600,
     },
     "tiktok": {
         "urls": TIKTOK_BATCH_URLS,
@@ -445,7 +445,7 @@ BATCH_PLATFORMS: dict[str, dict] = {
         "limit_key": "videosLimit",
         "limit_value": 10,  # 25 URLs x 10 = 250 items
         "min_coverage": 12,  # #6: relaxed from 15
-        "batch_timeout": 1800,
+        "batch_timeout": 3600,
     },
     "youtube": {
         "urls": YOUTUBE_BATCH_URLS,
@@ -454,7 +454,7 @@ BATCH_PLATFORMS: dict[str, dict] = {
         "limit_key": "videosLimit",
         "limit_value": 10,  # 25 URLs x 10 = 250 items
         "min_coverage": 12,  # #6: relaxed from 15
-        "batch_timeout": 3600,  # #10: YouTube batch needs more time (25 channels)
+        "batch_timeout": 3600,
     },
     "reddit": {
         "queries": REDDIT_BATCH_QUERIES,
@@ -464,7 +464,7 @@ BATCH_PLATFORMS: dict[str, dict] = {
         "limit_value": 10,  # 25 queries x 10 posts = 250 total
         "date_param": None,
         "min_coverage": 15,
-        "batch_timeout": 1800,
+        "batch_timeout": 3600,
     },
     "google_news": {
         "queries": GOOGLE_NEWS_BATCH_QUERIES,
@@ -472,7 +472,7 @@ BATCH_PLATFORMS: dict[str, dict] = {
         "limit_value": 25,  # 25 queries x 25 results = 625 total
         "date_param": None,
         "min_coverage": 0,  # can't reliably match query terms to article URLs
-        "batch_timeout": 1200,
+        "batch_timeout": 3600,
     },
 }
 

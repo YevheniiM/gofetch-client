@@ -31,7 +31,7 @@ jobs:
         run: mypy src/
 
       - name: Test
-        run: pytest tests/
+        run: pytest tests/ --ignore=tests/e2e
 
   build:
     needs: test

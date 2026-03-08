@@ -3,7 +3,7 @@ E2E test fixtures — real GoFetch client, ngrok tunnel, webhook receiver.
 
 Environment variables (loaded from `.env` in project root):
   GOFETCH_API_KEY    — API key for the GoFetch dev environment
-  GOFETCH_BASE_URL   — (optional) API base URL, defaults to https://api.go-fetch.io
+  GOFETCH_BASE_URL   — (optional) API base URL, defaults to https://go-fetch.io
   E2E_WEBHOOK_PORT   — (optional) local port for webhook receiver (default: 8765)
 
 Load them before running:
@@ -55,7 +55,7 @@ def api_key() -> str:
 
 @pytest.fixture(scope="session")
 def base_url() -> str:
-    return os.environ.get("GOFETCH_BASE_URL", "https://api.go-fetch.io")
+    return os.environ.get("GOFETCH_BASE_URL", "https://go-fetch.io")
 
 
 # ---------------------------------------------------------------------------
