@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-27
+
+### Added
+
+- Facebook scraper support (`ScraperType.FACEBOOK`, actor URL `apify/facebook-scraper`)
+- Facebook Posts scraper support (`ScraperType.FACEBOOK_POSTS`, actor URL `apify/facebook-posts-scraper`)
+- Facebook Profile scraper support (`ScraperType.FACEBOOK_PROFILE`, actor URL `apify/facebook-pages-scraper`)
+
 ## [0.2.1] - 2026-03-08
 
 ### Fixed

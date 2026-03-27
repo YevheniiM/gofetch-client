@@ -24,6 +24,9 @@ class ScraperType(str, Enum):
     - YOUTUBE -> streamers/youtube-scraper
     - REDDIT -> xmolodtsov/reddit-scraper
     - GOOGLE_NEWS -> xmolodtsov/google-news-scraper
+    - FACEBOOK -> apify/facebook-scraper
+    - FACEBOOK_POSTS -> apify/facebook-posts-scraper
+    - FACEBOOK_PROFILE -> apify/facebook-pages-scraper
     """
 
     INSTAGRAM = "instagram"
@@ -33,6 +36,9 @@ class ScraperType(str, Enum):
     YOUTUBE = "youtube"
     REDDIT = "reddit"
     GOOGLE_NEWS = "google_news"
+    FACEBOOK = "facebook"
+    FACEBOOK_POSTS = "facebook_posts"
+    FACEBOOK_PROFILE = "facebook_profile"
 
 
 class JobStatus(str, Enum):
@@ -160,6 +166,10 @@ ACTOR_URL_MAPPING: dict[str, str] = {
     "streamers/youtube-scraper": "youtube",
     "xmolodtsov/reddit-scraper": "reddit",
     "xmolodtsov/google-news-scraper": "google_news",
+    # Facebook
+    "apify/facebook-posts-scraper": "facebook_posts",
+    "apify/facebook-pages-scraper": "facebook_profile",
+    "apify/facebook-scraper": "facebook",
     # Direct mappings (already GoFetch types)
     "instagram": "instagram",
     "instagram_profile": "instagram_profile",
@@ -168,6 +178,9 @@ ACTOR_URL_MAPPING: dict[str, str] = {
     "youtube": "youtube",
     "reddit": "reddit",
     "google_news": "google_news",
+    "facebook": "facebook",
+    "facebook_posts": "facebook_posts",
+    "facebook_profile": "facebook_profile",
 }
 
 
