@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-05
+
+### Fixed
+
+- **Wait loops no longer abandon runs the platform is about to retry.** Terminality
+  was decided from the job status string alone, and `failed` was treated as
+  unconditionally final. The server now reports `failed` with `is_terminal: false`
+  while an automatic retry is pending, so `.call()` returned on a run that was about
+  to restart: the retry's results were produced with nobody polling for them, and
+  re-submitting — the natural recovery — created a duplicate job and duplicate spend.
+
+  All four wait loops (`ActorClient`, `AsyncActorClient`, `RunClient`, `AsyncRunClient`)
+  now trust the server's `is_terminal` when it is present.
+
+  **Backward compatible:** against a server that does not send `is_terminal`, the
+  status map is used exactly as before, so older deployments behave identically.
+
+### Added
+
+- `isTerminal`, `willAutoRetry` and `attemptHistory` promoted to top-level fields on
+  the run dict. Previously reachable only at `run["_gofetch_job"][...]`.
+  - `isTerminal` — whether the run has an outcome you can act on. **Poll on this, not
+    on `status`**: an Apify-shaped `FAILED` status with `isTerminal: false` means a
+    retry is pending.
+  - `willAutoRetry` — the platform has committed to running this job again.
+  - `attemptHistory` — per-attempt failure reasons. `error_message` only ever holds
+    the *current* attempt and is cleared when a retry starts, so this is where an
+    earlier attempt's reason survives.
+
 ## [0.3.0] - 2026-03-27
 
 ### Added

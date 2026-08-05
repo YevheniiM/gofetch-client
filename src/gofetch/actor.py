@@ -28,7 +28,32 @@ TERMINAL_STATUSES = frozenset({"completed", "failed", "timed_out", "cancelled"})
 
 
 def _is_terminal(status: str) -> bool:
+    """Terminality inferred from the status string alone.
+
+    Kept as the fallback for servers that do not send ``is_terminal``. Prefer
+    :func:`_job_is_terminal`, which asks the server first — ``failed`` is no
+    longer unconditionally terminal (see below).
+    """
     return status in TERMINAL_STATUSES
+
+
+def _job_is_terminal(job: dict[str, Any]) -> bool:
+    """Whether a job has reached an outcome the caller can act on.
+
+    The server is authoritative when it answers. ``status`` alone is NOT enough:
+    a job that fails an attempt while automatic retries remain reports
+    ``status="failed"`` and ``is_terminal=False``, because the platform is about
+    to run it again. Treating that as final abandons a run that is still going —
+    the retry's results are then produced with nobody polling for them, and
+    re-submitting (the natural recovery) duplicates the work and the spend.
+
+    Falls back to the status map when ``is_terminal`` is absent or not a bool, so
+    older servers behave exactly as they did before this function existed.
+    """
+    server_verdict = job.get("is_terminal")
+    if isinstance(server_verdict, bool):
+        return server_verdict
+    return _is_terminal(job.get("status", ""))
 
 
 def _next_poll_interval(current: float) -> float:
@@ -60,6 +85,13 @@ def _format_job_as_apify_run(
         "exitCode": 0 if status == "SUCCEEDED" else None,
         "defaultKeyValueStoreId": None,
         "defaultRequestQueueId": None,
+        # Retry-awareness, promoted to the top level. Both are readable at
+        # run["_gofetch_job"][...] too, but a field nobody can find is a field
+        # nobody uses — `isTerminal` in particular is the one signal that tells a
+        # caller whether an Apify-style FAILED status is actually the end of the run.
+        "isTerminal": _job_is_terminal(job),
+        "willAutoRetry": job.get("will_auto_retry"),
+        "attemptHistory": job.get("attempt_history") or [],
         "_gofetch_job": job,
     }
     if extra_fields:
@@ -199,7 +231,7 @@ class ActorClient:
         while True:
             job = self._http.get(f"/api/v1/jobs/{job_id}/")
 
-            if _is_terminal(job.get("status", "")):
+            if _job_is_terminal(job):
                 return _format_job_as_apify_run(job, scraper_type=self._scraper_type)
 
             if wait_secs is not None and (time.monotonic() - start_time) >= wait_secs:
@@ -302,7 +334,7 @@ class AsyncActorClient:
         while True:
             job = await self._http.get(f"/api/v1/jobs/{job_id}/")
 
-            if _is_terminal(job.get("status", "")):
+            if _job_is_terminal(job):
                 return _format_job_as_apify_run(job, scraper_type=self._scraper_type)
 
             if wait_secs is not None and (time.monotonic() - start_time) >= wait_secs:

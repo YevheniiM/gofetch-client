@@ -10,7 +10,11 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from gofetch.actor import _format_job_as_apify_run, _is_terminal, _next_poll_interval
+from gofetch.actor import (
+    _format_job_as_apify_run,
+    _job_is_terminal,
+    _next_poll_interval,
+)
 from gofetch.constants import DEFAULT_POLL_INTERVAL
 from gofetch.exceptions import APIError
 
@@ -74,7 +78,7 @@ class RunClient:
                     return None
                 raise
 
-            if _is_terminal(job.get("status", "")):
+            if _job_is_terminal(job):
                 return _format_job_as_apify_run(
                     job, scraper_type=job.get("scraper_type"),
                 )
@@ -173,7 +177,7 @@ class AsyncRunClient:
                     return None
                 raise
 
-            if _is_terminal(job.get("status", "")):
+            if _job_is_terminal(job):
                 return _format_job_as_apify_run(
                     job, scraper_type=job.get("scraper_type"),
                 )
