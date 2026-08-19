@@ -115,15 +115,11 @@ class GoFetchClient:
         Get an actor client for a specific scraper.
 
         Args:
-            actor_url: Apify-style actor URL or GoFetch scraper type.
-                Supported values:
-                - "apify/instagram-scraper" -> instagram
-                - "apify/instagram-profile-scraper" -> instagram_profile
-                - "clockworks/tiktok-profile-scraper" -> tiktok
-                - "streamers/youtube-scraper" -> youtube
-                - "xmolodtsov/reddit-scraper" -> reddit
-                - "xmolodtsov/google-news-scraper" -> google_news
-                - Or direct: "instagram", "tiktok", "youtube", "reddit", "google_news"
+            actor_url: GoFetch scraper type (any ``ScraperType`` value, e.g.
+                "instagram", "instagram_comments", "tiktok", "tiktok_comments",
+                "tiktok_identity_resolve", "youtube", "facebook", "facebook_profile",
+                "google_serp", "profile_probe") or an Apify actor URL such as
+                "apify/instagram-scraper" — see ``ScraperType`` for the mapping.
 
         Returns:
             ActorClient instance for the specified scraper
@@ -257,15 +253,11 @@ class AsyncGoFetchClient:
         Get an async actor client for a specific scraper.
 
         Args:
-            actor_url: Apify-style actor URL or GoFetch scraper type.
-                Supported values:
-                - "apify/instagram-scraper" -> instagram
-                - "apify/instagram-profile-scraper" -> instagram_profile
-                - "clockworks/tiktok-profile-scraper" -> tiktok
-                - "streamers/youtube-scraper" -> youtube
-                - "xmolodtsov/reddit-scraper" -> reddit
-                - "xmolodtsov/google-news-scraper" -> google_news
-                - Or direct: "instagram", "tiktok", "youtube", "reddit", "google_news"
+            actor_url: GoFetch scraper type (any ``ScraperType`` value, e.g.
+                "instagram", "instagram_comments", "tiktok", "tiktok_comments",
+                "tiktok_identity_resolve", "youtube", "facebook", "facebook_profile",
+                "google_serp", "profile_probe") or an Apify actor URL such as
+                "apify/instagram-scraper" — see ``ScraperType`` for the mapping.
 
         Returns:
             AsyncActorClient instance for the specified scraper

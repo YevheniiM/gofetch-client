@@ -8,37 +8,54 @@ from __future__ import annotations
 
 import warnings
 from enum import Enum
-from typing import Any, NamedTuple
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from pydantic import BaseModel, Field
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 
 class ScraperType(str, Enum):
     """
-    Supported scraper types.
+    Supported scraper types — the ``scraper_type`` values the GoFetch API accepts.
 
-    These map to Apify actor URLs for compatibility:
-    - INSTAGRAM -> apify/instagram-scraper
-    - INSTAGRAM_PROFILE -> apify/instagram-profile-scraper
-    - TIKTOK -> clockworks/tiktok-profile-scraper
-    - YOUTUBE -> streamers/youtube-scraper
-    - REDDIT -> xmolodtsov/reddit-scraper
-    - GOOGLE_NEWS -> xmolodtsov/google-news-scraper
-    - FACEBOOK -> apify/facebook-scraper
-    - FACEBOOK_POSTS -> apify/facebook-posts-scraper
-    - FACEBOOK_PROFILE -> apify/facebook-pages-scraper
+    Pass the value directly to ``client.actor(...)``. For migrations, these Apify
+    actor URLs are also accepted and resolve to the type on the right:
+    - apify/instagram-scraper -> INSTAGRAM
+    - apify/instagram-profile-scraper -> INSTAGRAM_PROFILE
+    - clockworks/tiktok-profile-scraper -> TIKTOK
+    - streamers/youtube-scraper -> YOUTUBE
+    - apify/facebook-scraper -> FACEBOOK
+    - apify/facebook-posts-scraper -> FACEBOOK_POSTS
+    - apify/facebook-pages-scraper -> FACEBOOK_PROFILE
+    - scraperlink/google-search-results-serp-scraper -> GOOGLE_SERP
+    - xmolodtsov/reddit-scraper -> REDDIT
+    - xmolodtsov/google-news-scraper -> GOOGLE_NEWS
+
+    INSTAGRAM_COMMENTS, TIKTOK_COMMENTS, PROFILE_PROBE and TIKTOK_IDENTITY_RESOLVE
+    are GoFetch-native and have no Apify equivalent.
+
+    REDDIT and GOOGLE_NEWS are kept for import compatibility only: the API does
+    not currently accept them for job creation (it answers 400).
     """
 
     INSTAGRAM = "instagram"
     INSTAGRAM_PROFILE = "instagram_profile"
     INSTAGRAM_POSTS = "instagram_posts"
+    INSTAGRAM_COMMENTS = "instagram_comments"
     TIKTOK = "tiktok"
+    TIKTOK_COMMENTS = "tiktok_comments"
+    TIKTOK_IDENTITY_RESOLVE = "tiktok_identity_resolve"
     YOUTUBE = "youtube"
-    REDDIT = "reddit"
-    GOOGLE_NEWS = "google_news"
     FACEBOOK = "facebook"
     FACEBOOK_POSTS = "facebook_posts"
     FACEBOOK_PROFILE = "facebook_profile"
+    GOOGLE_SERP = "google_serp"
+    PROFILE_PROBE = "profile_probe"
+    # Not accepted by the API for job creation right now (400); see docstring.
+    REDDIT = "reddit"
+    GOOGLE_NEWS = "google_news"
 
 
 class JobStatus(str, Enum):
@@ -73,6 +90,37 @@ class RunStatus(NamedTuple):
 
     data: dict[str, Any]
     is_ready: bool
+
+
+class ListPage(list[dict[str, Any]]):
+    """
+    A page of dataset items, shaped like apify-client's ``ListPage``.
+
+    It is still a plain ``list`` — ``len()``, iteration, indexing and JSON
+    serialisation behave exactly as before — but also carries the Apify page
+    attributes ``items``, ``offset``, ``limit``, ``total`` and ``desc``, so
+    ``dataset.list_items().items`` works when porting code. ``count`` is not
+    provided because it would shadow ``list.count()``; use ``len(page)``.
+    """
+
+    def __init__(
+        self,
+        items: Iterable[dict[str, Any]] = (),
+        *,
+        offset: int = 0,
+        limit: int | None = None,
+        total: int | None = None,
+        desc: bool = False,
+    ) -> None:
+        super().__init__(items)
+        self.offset = offset
+        self.limit = limit
+        self.total = len(self) if total is None else total
+        self.desc = desc
+
+    @property
+    def items(self) -> list[dict[str, Any]]:
+        return self
 
 
 # Pydantic models for API response validation
@@ -164,23 +212,15 @@ ACTOR_URL_MAPPING: dict[str, str] = {
     "apify/instagram-profile-scraper": "instagram_profile",
     "clockworks/tiktok-profile-scraper": "tiktok",
     "streamers/youtube-scraper": "youtube",
-    "xmolodtsov/reddit-scraper": "reddit",
-    "xmolodtsov/google-news-scraper": "google_news",
-    # Facebook
+    "apify/facebook-scraper": "facebook",
     "apify/facebook-posts-scraper": "facebook_posts",
     "apify/facebook-pages-scraper": "facebook_profile",
-    "apify/facebook-scraper": "facebook",
+    "scraperlink/google-search-results-serp-scraper": "google_serp",
+    "xmolodtsov/reddit-scraper": "reddit",
+    "xmolodtsov/google-news-scraper": "google_news",
     # Direct mappings (already GoFetch types)
-    "instagram": "instagram",
-    "instagram_profile": "instagram_profile",
-    "instagram_posts": "instagram_posts",
-    "tiktok": "tiktok",
-    "youtube": "youtube",
-    "reddit": "reddit",
-    "google_news": "google_news",
-    "facebook": "facebook",
-    "facebook_posts": "facebook_posts",
-    "facebook_profile": "facebook_profile",
+    **{t.value: t.value for t in ScraperType},
+    "google-serp": "google_serp",
 }
 
 

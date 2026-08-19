@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-19
+
+### Added
+
+- Five scraper types that have been live on the platform but missing from the SDK, so every
+  call to them raised `UserWarning: Unknown actor URL …`:
+  `ScraperType.INSTAGRAM_COMMENTS`, `TIKTOK_COMMENTS`, `GOOGLE_SERP`
+  (Apify alias `scraperlink/google-search-results-serp-scraper`), `PROFILE_PROBE`,
+  `TIKTOK_IDENTITY_RESOLVE`. All are also accepted as direct strings by `client.actor(...)`.
+- `run["scraper_metadata"]` — the job's completeness signals (`coverage` for Instagram
+  comments, `completeness` for TikTok comments, `enrichment`, `restrictions`, …) are now on
+  the run dict returned by `call()`, `start()`, `run.get()` and `wait_for_finish()`.
+  Previously reachable only at `run["_gofetch_job"]["scraper_metadata"]`.
+- `ListPage` (exported from `gofetch`): `DatasetClient.list_items()` and
+  `AsyncDatasetClient.list_items()` now return it. It **is still a `list`** — `len()`,
+  iteration, indexing and JSON serialisation are unchanged — but it also carries
+  apify-client's page attributes `items`, `total`, `offset`, `limit`, `desc`, so the
+  ported idiom `client.dataset(id).list_items().items` works. (`count` is deliberately not
+  provided because it would shadow `list.count()`; use `len(page)`.)
+
+### Changed
+
+- README rewritten around the 13 live scrapers with the API's actual input keys, and now
+  covers Facebook (in the SDK since 0.3.0 but never documented), `isTerminal` polling,
+  completeness signals and `ListPage`. The Reddit / Google News examples were removed and
+  the `.call(input=…)` examples fixed to `run_input=`.
+- `ScraperType.REDDIT` and `ScraperType.GOOGLE_NEWS` remain for import compatibility but are
+  documented as not currently accepted by the API for job creation (it returns 400).
+
 ## [0.4.0] - 2026-08-05
 
 ### Fixed

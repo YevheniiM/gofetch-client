@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from gofetch import JobStatus, RunStatus, ScraperType
-from gofetch.types import resolve_actor_url
+import warnings
+
+from gofetch import JobStatus, ListPage, RunStatus, ScraperType
+from gofetch.types import ACTOR_URL_MAPPING, resolve_actor_url
 
 
 class TestScraperType:
@@ -24,6 +26,22 @@ class TestScraperType:
 
     def test_google_news_type(self) -> None:
         assert ScraperType.GOOGLE_NEWS == "google_news"
+
+    def test_google_serp_type(self) -> None:
+        assert ScraperType.GOOGLE_SERP == "google_serp"
+
+    def test_facebook_types(self) -> None:
+        assert ScraperType.FACEBOOK == "facebook"
+        assert ScraperType.FACEBOOK_POSTS == "facebook_posts"
+        assert ScraperType.FACEBOOK_PROFILE == "facebook_profile"
+
+    def test_comment_types(self) -> None:
+        assert ScraperType.INSTAGRAM_COMMENTS == "instagram_comments"
+        assert ScraperType.TIKTOK_COMMENTS == "tiktok_comments"
+
+    def test_identity_types(self) -> None:
+        assert ScraperType.PROFILE_PROBE == "profile_probe"
+        assert ScraperType.TIKTOK_IDENTITY_RESOLVE == "tiktok_identity_resolve"
 
 
 class TestJobStatus:
@@ -81,10 +99,53 @@ class TestResolveActorUrl:
         assert resolve_actor_url("instagram") == "instagram"
         assert resolve_actor_url("instagram_profile") == "instagram_profile"
         assert resolve_actor_url("instagram_posts") == "instagram_posts"
+        assert resolve_actor_url("instagram_comments") == "instagram_comments"
         assert resolve_actor_url("tiktok") == "tiktok"
+        assert resolve_actor_url("tiktok_comments") == "tiktok_comments"
         assert resolve_actor_url("youtube") == "youtube"
+        assert resolve_actor_url("facebook") == "facebook"
+        assert resolve_actor_url("facebook_posts") == "facebook_posts"
+        assert resolve_actor_url("facebook_profile") == "facebook_profile"
         assert resolve_actor_url("reddit") == "reddit"
         assert resolve_actor_url("google_news") == "google_news"
+        assert resolve_actor_url("google_serp") == "google_serp"
+        assert resolve_actor_url("profile_probe") == "profile_probe"
+        assert resolve_actor_url("tiktok_identity_resolve") == "tiktok_identity_resolve"
+
+    def test_every_scraper_type_resolves_silently(self) -> None:
+        # A ScraperType missing from ACTOR_URL_MAPPING still works (the value
+        # passes through) but warns on every legitimate call — the 0.3.0 bug
+        # for the comment scrapers. Pin the invariant so it can't drift again.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            for scraper_type in ScraperType:
+                assert resolve_actor_url(scraper_type.value) == scraper_type.value
+
+    def test_mapping_targets_are_known_types(self) -> None:
+        assert set(ACTOR_URL_MAPPING.values()) == {t.value for t in ScraperType}
 
     def test_unknown_type(self) -> None:
-        assert resolve_actor_url("unknown/actor") == "unknown/actor"
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            assert resolve_actor_url("unknown/actor") == "unknown/actor"
+        assert len(caught) == 1
+
+
+class TestListPage:
+
+    def test_is_a_list_and_a_page(self) -> None:
+        page = ListPage([{"a": 1}, {"a": 2}], offset=0, limit=None, total=5)
+        assert isinstance(page, list)
+        assert len(page) == 2
+        assert page[0] == {"a": 1}
+        assert list(page) == [{"a": 1}, {"a": 2}]
+        assert page.items == [{"a": 1}, {"a": 2}]
+        assert page.count({"a": 1}) == 1  # list.count() is untouched
+        assert page.total == 5
+        assert page.offset == 0
+        assert page.limit is None
+        assert page.desc is False
+
+    def test_total_defaults_to_count(self) -> None:
+        page = ListPage([{"a": 1}])
+        assert page.total == 1

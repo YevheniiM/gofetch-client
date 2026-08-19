@@ -46,24 +46,25 @@ class TestGoFetchClient:
         assert actor._scraper_type == "reddit"
         actor = client.actor("xmolodtsov/google-news-scraper")
         assert actor._scraper_type == "google_news"
+        actor = client.actor("apify/facebook-scraper")
+        assert actor._scraper_type == "facebook"
+        actor = client.actor("apify/facebook-posts-scraper")
+        assert actor._scraper_type == "facebook_posts"
+        actor = client.actor("apify/facebook-pages-scraper")
+        assert actor._scraper_type == "facebook_profile"
+        actor = client.actor("scraperlink/google-search-results-serp-scraper")
+        assert actor._scraper_type == "google_serp"
         client.close()
 
     def test_actor_accepts_direct_types(self) -> None:
         client = GoFetchClient(api_key="test")
-        actor = client.actor("instagram")
-        assert actor._scraper_type == "instagram"
-        actor = client.actor("tiktok")
-        assert actor._scraper_type == "tiktok"
-        actor = client.actor("youtube")
-        assert actor._scraper_type == "youtube"
-        actor = client.actor("reddit")
-        assert actor._scraper_type == "reddit"
-        actor = client.actor("google_news")
-        assert actor._scraper_type == "google_news"
-        actor = client.actor("instagram_profile")
-        assert actor._scraper_type == "instagram_profile"
-        actor = client.actor("instagram_posts")
-        assert actor._scraper_type == "instagram_posts"
+        for scraper_type in (
+            "instagram", "instagram_profile", "instagram_posts", "instagram_comments",
+            "tiktok", "tiktok_comments", "tiktok_identity_resolve", "youtube",
+            "facebook", "facebook_posts", "facebook_profile",
+            "google_serp", "profile_probe", "reddit", "google_news",
+        ):
+            assert client.actor(scraper_type)._scraper_type == scraper_type
         client.close()
 
     def test_dataset_method_returns_dataset_client(self) -> None:

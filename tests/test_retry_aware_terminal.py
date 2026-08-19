@@ -97,6 +97,16 @@ class TestRunDictFields:
         run = _format_job_as_apify_run(_job(is_terminal=False))
         assert run["_gofetch_job"]["is_terminal"] is False
 
+    def test_promotes_scraper_metadata_to_top_level(self) -> None:
+        # coverage / completeness live here; the 0.3.0 dict dropped them, so the
+        # only path was run["_gofetch_job"]["scraper_metadata"].
+        metadata = {"coverage": {"mean": 0.2, "posts_failed": 0}}
+        run = _format_job_as_apify_run(_job(scraper_metadata=metadata))
+        assert run["scraper_metadata"] == metadata
+
+    def test_scraper_metadata_none_when_server_omits_it(self) -> None:
+        assert _format_job_as_apify_run(_job())["scraper_metadata"] is None
+
 
 class TestWaitLoopsHonourServerVerdict:
     """All four wait loops must block through a pending retry, not return on it."""

@@ -92,6 +92,9 @@ def _format_job_as_apify_run(
         "isTerminal": _job_is_terminal(job),
         "willAutoRetry": job.get("will_auto_retry"),
         "attemptHistory": job.get("attempt_history") or [],
+        # Completeness signals (`coverage`, `completeness`, `enrichment`, ...)
+        # ride here; without this they were only reachable under _gofetch_job.
+        "scraper_metadata": job.get("scraper_metadata"),
         "_gofetch_job": job,
     }
     if extra_fields:

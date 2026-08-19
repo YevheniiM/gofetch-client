@@ -11,7 +11,7 @@ A drop-in replacement for `apify-client` that uses the GoFetch.io infrastructure
 ## Features
 
 - **Drop-in replacement** for `apify-client` - minimal code changes required
-- **Multiple platforms**: Instagram, TikTok, YouTube, Reddit, Google News
+- **13 scrapers**: Instagram (posts, profiles, comments), TikTok (videos, comments, identity resolve), YouTube, Facebook (posts, pages), Google SERP, cross-platform Profile Probe
 - **Sync and async** execution modes
 - **Webhook support** for asynchronous job notifications
 - **Full type hints** for better IDE support
@@ -110,59 +110,187 @@ The client automatically translates Apify actor URLs to GoFetch scrapers:
 - `apify/instagram-profile-scraper` → `instagram_profile`
 - `clockworks/tiktok-profile-scraper` → `tiktok`
 - `streamers/youtube-scraper` → `youtube`
-- `xmolodtsov/reddit-scraper` → `reddit`
-- `xmolodtsov/google-news-scraper` → `google_news`
+- `apify/facebook-scraper` → `facebook`
+- `apify/facebook-posts-scraper` → `facebook_posts`
+- `apify/facebook-pages-scraper` → `facebook_profile`
+- `scraperlink/google-search-results-serp-scraper` → `google_serp`
+
+Input is passed to the API as-is (`run_input` → `config`); the platform accepts the
+common Apify key spellings (`directUrls`, `resultsLimit`, `startUrls`, `onlyPostsNewerThan`, …).
 
 ## Supported Platforms
+
+Every scraper is a `scraper_type` you pass to `client.actor(...)`. `run_input` goes to the API
+unchanged, so the keys below are the API's own. Billing is per returned item (post, comment,
+SERP query, probe row); rates are on your dashboard.
+
+| `scraper_type` | Returns | Key inputs |
+|---|---|---|
+| `instagram` / `instagram_posts` | posts and reels for accounts | `directUrls` or `usernames`, `maxPosts` (default 50, `0` = all), `onlyPostsNewerThan` |
+| `instagram_profile` | one profile row per account | `usernames` or `directUrls` |
+| `instagram_comments` | comments (+ replies) on posts/reels | `directUrls` or `handles`, `maxComments`, `includeReplies` |
+| `tiktok` | videos for profiles / hashtags / searches | `profiles` or `directUrls` / `hashtags` / `searchQueries`, `maxVideosPerProfile`, `onlyPostsNewerThan` |
+| `tiktok_comments` | comments (+ replies) on videos | same as `instagram_comments` |
+| `tiktok_identity_resolve` | a creator's other social handles, with evidence | `creators` |
+| `youtube` | videos, shorts and streams for channels | `channelUrls` or `directUrls`, `maxVideos`, `onlyPostsNewerThan` |
+| `facebook` / `facebook_posts` | posts for pages | `pageUrls` or `directUrls`, `resultsLimit` (default 50), `onlyPostsNewerThan` |
+| `facebook_profile` | one page-info row per page | `pageUrls` or `directUrls` |
+| `google_serp` | first-page organic results per query | `queries`, `country` (US), `hl` (en), `limit` (≤ 10) |
+| `profile_probe` | one resolved-profile row per (creator, platform, candidate) across IG / YT / FB / X | `creators` |
+
+Dates are `YYYY-MM-DD`.
 
 ### Instagram
 
 ```python
-actor = client.actor("instagram")
-run = actor.call(run_input={
-    "directUrls": ["https://www.instagram.com/nike/"],
-    "onlyPostsNewerThan": "2024-01-01",
+# Posts (and reels) for accounts
+run = client.actor("instagram").call(run_input={
+    "directUrls": ["https://www.instagram.com/nike/"],   # or "usernames": ["nike"]
+    "onlyPostsNewerThan": "2026-01-01",
     "maxPosts": 50,
 })
+
+# Profile info only
+run = client.actor("instagram_profile").call(run_input={"usernames": ["nike"]})
 ```
+
+### Instagram / TikTok comments
+
+Identical inputs and an identical output schema for both platforms — one parser handles both.
+
+```python
+run = client.actor("instagram_comments").call(run_input={   # or "tiktok_comments"
+    "handles": ["nasa"],            # or "directUrls": [post/video URLs]
+    "maxPosts": 10,                 # posts per handle (ignored with directUrls)
+    "maxComments": 5000,            # global cap — this is your cost ceiling, always set it
+    "maxCommentsPerPost": 500,
+    "includeReplies": True,         # replies are separate billable items
+    "maxRepliesPerComment": 50,
+    "onlyCommentsNewerThan": "2026-01-01",
+})
+comments = client.dataset(run["defaultDatasetId"]).list_items()
+```
+
+Replies are top-level items with `isReply: true` and `parentCommentId` pointing at the parent.
+`repliesCount` is `null` when replies were not checked — `null` is not `0`. Read the job's
+`coverage` (Instagram) / `completeness` (TikTok) block to tell a capped job from a degraded one —
+see [Completeness](#results-completeness-and-polling).
 
 ### TikTok
 
 ```python
-actor = client.actor("tiktok")
-run = actor.call(run_input={
+run = client.actor("tiktok").call(run_input={
     "profiles": ["khaby.lame", "charlidamelio"],
-    "oldestPostDate": "2024-01-01",
+    "onlyPostsNewerThan": "2026-01-01",
     "maxVideosPerProfile": 50,
+})
+```
+
+### TikTok identity resolve
+
+Given TikTok creators, returns their handles on other platforms with the evidence used. Each
+creator settles one `row_type: "seed"` row plus up to 25 link rows.
+
+```python
+run = client.actor("tiktok_identity_resolve").call(run_input={
+    "creators": [
+        {"ref": "1", "handle": "@thekoreanvegan"},
+        {"ref": "2", "url": "https://www.tiktok.com/@nasa"},
+        "bare_handle_also_works",
+    ],
+    "options": {"surfaces": ["seed", "hub", "counterpart"], "enrich": False},
 })
 ```
 
 ### YouTube
 
 ```python
-actor = client.actor("youtube")
-run = actor.call(run_input={
-    "startUrls": [{"url": "https://www.youtube.com/@MrBeast"}],
-    "oldestPostDate": "2024-01-01",
+run = client.actor("youtube").call(run_input={
+    "channelUrls": ["https://www.youtube.com/@MrBeast"],   # startUrls: [{"url": ...}] also works
+    "onlyPostsNewerThan": "2026-01-01",
+    "maxVideos": 100,
 })
 ```
 
-### Reddit
+### Facebook
 
 ```python
-# Using Apify-style actor URL
-run = client.actor("xmolodtsov/reddit-scraper").call(input={"query": "python"})
-# Or using GoFetch scraper type directly
-run = client.actor("reddit").call(input={"query": "python"})
+# Posts for pages
+run = client.actor("facebook").call(run_input={
+    "pageUrls": ["https://www.facebook.com/nike"],
+    "onlyPostsNewerThan": "2026-01-01",
+    "resultsLimit": 50,
+})
+
+# Page info only
+run = client.actor("facebook_profile").call(run_input={"pageUrls": ["https://www.facebook.com/nike"]})
 ```
 
-### Google News
+### Google SERP
+
+One output item per query, holding the top organic results. Search operators are honoured verbatim.
 
 ```python
-# Using Apify-style actor URL
-run = client.actor("xmolodtsov/google-news-scraper").call(input={"query": "technology"})
-# Or using GoFetch scraper type directly
-run = client.actor("google_news").call(input={"query": "technology"})
+run = client.actor("google_serp").call(run_input={
+    "queries": ['"go-fetch.io" reviews', "social media scraping api"],
+    "country": "US",
+    "hl": "en",
+    "limit": 10,   # first page only; capped at 10
+})
+for item in client.dataset(run["defaultDatasetId"]).iterate_items():
+    print(item["search_term"], [r["url"] for r in item["results"]])
+```
+
+### Profile Probe
+
+Resolve a batch of creators across Instagram, YouTube, Facebook and X in one call. Give each
+creator a `ref` (your join key) and candidate handles per platform; you get one row per
+(ref, platform, candidate) with `status`, the resolved `profile` and cross-resolve links.
+
+```python
+run = client.actor("profile_probe").call(run_input={
+    "creators": [
+        {"ref": "123", "platforms": {"instagram": ["nike"], "youtube": ["@nike"], "x": ["Nike"]}},
+        {"ref": "456", "platforms": {"facebook": ["nike"]}},
+    ],
+    "options": {"tryVariants": False, "maxCacheAgeDays": 30},
+})
+```
+
+Supported platform keys: `instagram`, `youtube`, `facebook`, `x`. Up to 1,000 creators per call.
+
+## Results, completeness and polling
+
+### Poll on `isTerminal`, not on `status`
+
+A job that fails an attempt while the platform still has automatic retries left reports
+`status: "FAILED"` with `isTerminal: false` — it is about to run again. `call()` and
+`wait_for_finish()` already honour this; if you poll `start()`ed runs yourself, do the same:
+
+```python
+run = client.actor("instagram").start(run_input={...})
+run = client.run(run["id"]).wait_for_finish()      # returns when isTerminal is true
+if run["status"] != "SUCCEEDED":
+    print(run["attemptHistory"])                    # per-attempt failure reasons
+```
+
+### Completeness signals
+
+The run dict carries the job's `scraper_metadata`. Comment jobs report how much of what the
+platform says exists was actually returned, so you can tell a cap from a failure:
+
+```python
+meta = run["scraper_metadata"] or {}
+coverage = meta.get("coverage")          # Instagram comments: ratio vs the post's comment count
+completeness = meta.get("completeness")  # TikTok comments: per-post accounting; read posts_complete
+```
+
+### `list_items()` returns a page that is still a list
+
+```python
+page = client.dataset(run["defaultDatasetId"]).list_items()
+len(page), page[0]         # plain list behaviour
+page.items, page.total     # apify-client's ListPage attributes (also offset, limit, desc)
 ```
 
 ## Webhook Handling
@@ -200,14 +328,16 @@ def webhook_handler(request):
 
 ## Error Handling
 
+HTTP-level problems raise; a job that fails does **not** — like Apify, `call()` returns the run
+dict with `status: "FAILED"` (see [polling](#poll-on-isterminal-not-on-status)).
+
 ```python
 from gofetch import (
     GoFetchClient,
     GoFetchError,
     AuthenticationError,
     RateLimitError,
-    JobError,
-    TimeoutError,
+    APIError,
 )
 
 try:
@@ -220,14 +350,14 @@ except AuthenticationError:
 except RateLimitError as e:
     print(f"Rate limited. Retry after {e.retry_after} seconds")
 
-except TimeoutError as e:
-    print(f"Job timed out: {e.job_id}")
-
-except JobError as e:
-    print(f"Job failed: {e.error_message}")
+except APIError as e:
+    print(f"API rejected the request: {e.status_code} {e.message}")   # e.g. 400 on bad config
 
 except GoFetchError as e:
     print(f"GoFetch error: {e.message}")
+
+if run["status"] != "SUCCEEDED":
+    print("Job did not succeed:", run["_gofetch_job"].get("error_message"))
 ```
 
 ## Development

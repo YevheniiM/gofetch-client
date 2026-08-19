@@ -39,6 +39,7 @@ from gofetch.log import AsyncLogClient, LogClient
 from gofetch.run import AsyncRunClient, RunClient
 from gofetch.types import (
     JobStatus,
+    ListPage,
     RunStatus,
     ScraperType,
 )
@@ -58,7 +59,7 @@ from gofetch.webhook_client import (
 # Apify compatibility alias
 ApifyClient = GoFetchClient
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "APIError",
@@ -77,6 +78,7 @@ __all__ = [
     "GoFetchError",
     "JobError",
     "JobStatus",
+    "ListPage",
     "LogClient",
     "RateLimitError",
     "RunClient",
