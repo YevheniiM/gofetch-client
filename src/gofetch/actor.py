@@ -60,6 +60,21 @@ def _next_poll_interval(current: float) -> float:
     return min(current * POLL_BACKOFF_FACTOR, MAX_POLL_INTERVAL)
 
 
+def _usd(value: Any) -> float | None:
+    """Cost as a number, whatever shape the server sent it in.
+
+    The server serialises cost from a decimal column, so it arrives over JSON as
+    a string ("0.3000"). A caller reading a cost field expects something it can
+    sum and compare, and text silently fails both.
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _format_job_as_apify_run(
     job: dict[str, Any],
     scraper_type: str | None = None,
@@ -92,6 +107,11 @@ def _format_job_as_apify_run(
         "isTerminal": _job_is_terminal(job),
         "willAutoRetry": job.get("will_auto_retry"),
         "attemptHistory": job.get("attempt_history") or [],
+        # What the run actually cost. Apify-shaped callers read spend from
+        # `usageTotalUsd`; with the key absent every one of them reports $0 per
+        # run. None (not 0.0) until the server has settled the job — an unpriced
+        # run is unknown spend, not free.
+        "usageTotalUsd": _usd(job.get("actual_cost")),
         # Completeness signals (`coverage`, `completeness`, `enrichment`, ...)
         # ride here; without this they were only reachable under _gofetch_job.
         "scraper_metadata": job.get("scraper_metadata"),
