@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-29
+
+### Added
+
+- `run["usageTotalUsd"]` — the run's actual cost in USD, on the dict returned by `call()`,
+  `start()`, `run.get()` and `wait_for_finish()`. The API sends it as a decimal string, so it
+  is converted to a float; it is `None` (not `0.0`) until the job is settled. Drop-in
+  apify-client code reads spend from this key and previously saw `$0` for every run.
+
 ## [0.5.0] - 2026-08-19
 
 ### Added

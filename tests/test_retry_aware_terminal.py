@@ -107,6 +107,25 @@ class TestRunDictFields:
     def test_scraper_metadata_none_when_server_omits_it(self) -> None:
         assert _format_job_as_apify_run(_job())["scraper_metadata"] is None
 
+    def test_promotes_cost_as_a_number(self) -> None:
+        # The API serialises actual_cost from a decimal column, so it comes over
+        # the wire as a string; a caller summing usageTotalUsd needs a float.
+        run = _format_job_as_apify_run(_job(actual_cost="0.3000"))
+        assert run["usageTotalUsd"] == 0.3
+        assert isinstance(run["usageTotalUsd"], float)
+
+    def test_cost_accepts_a_numeric_server(self) -> None:
+        assert _format_job_as_apify_run(_job(actual_cost=0.0012))["usageTotalUsd"] == 0.0012
+
+    def test_cost_is_none_while_the_job_is_unpriced(self) -> None:
+        # Not 0.0: a run the server has not settled has unknown spend, and
+        # reporting $0 is the very bug this field exists to fix.
+        assert _format_job_as_apify_run(_job())["usageTotalUsd"] is None
+        assert _format_job_as_apify_run(_job(actual_cost=None))["usageTotalUsd"] is None
+
+    def test_unparseable_cost_does_not_raise(self) -> None:
+        assert _format_job_as_apify_run(_job(actual_cost="n/a"))["usageTotalUsd"] is None
+
 
 class TestWaitLoopsHonourServerVerdict:
     """All four wait loops must block through a pending retry, not return on it."""
