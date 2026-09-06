@@ -371,6 +371,50 @@ class TestPullAndIterate:
         assert len(rows) == 2
         assert self._acked(http)
 
+    def test_a_page_without_a_total_is_not_read_as_the_last_page(self):
+        """`_as_page` falls back to total=len(rows), which always equals the rows
+        just read. Believing it would end iteration after page one and then ack
+        — charging the customer for rows the SDK never handed them."""
+        http = MagicMock()
+        http.post.side_effect = _routed({"/pull/": MOCK_PULL_OK, "/ack/": MOCK_ACKED})
+        http.get.side_effect = [
+            {"results": [{"h": "a"}, {"h": "b"}]},   # full page, no `total`
+            {"results": [{"h": "c"}]},               # short page, no `total`
+        ]
+
+        rows = list(
+            DatasetFeedClient(http, "creator-feed").pull_and_iterate(page_size=2)
+        )
+
+        assert [r["h"] for r in rows] == ["a", "b", "c"]
+        assert self._acked(http)
+
+    def test_a_short_first_page_without_a_total_still_ends(self):
+        http = MagicMock()
+        http.post.side_effect = _routed({"/pull/": MOCK_PULL_OK, "/ack/": MOCK_ACKED})
+        http.get.side_effect = [{"results": [{"h": "a"}]}]
+
+        rows = list(
+            DatasetFeedClient(http, "creator-feed").pull_and_iterate(page_size=2)
+        )
+
+        assert [r["h"] for r in rows] == ["a"]
+        assert http.get.call_count == 1
+
+    def test_a_reported_total_still_stops_on_the_last_full_page(self):
+        """When the server does send a total it stays authoritative — no extra
+        request just to see an empty page."""
+        http = MagicMock()
+        http.post.side_effect = _routed({"/pull/": MOCK_PULL_OK, "/ack/": MOCK_ACKED})
+        http.get.side_effect = [_rows_page([{"h": "a"}, {"h": "b"}], total=2, limit=2)]
+
+        rows = list(
+            DatasetFeedClient(http, "creator-feed").pull_and_iterate(page_size=2)
+        )
+
+        assert len(rows) == 2
+        assert http.get.call_count == 1
+
     def test_dataset_paused_propagates_and_never_acks(self):
         """The pause is checked BEFORE the open batch is re-served, so pull()
         cannot see a batch the customer still owns. Swallowing this 409 would
@@ -503,6 +547,40 @@ class TestDownload:
             )
 
         assert str(exc_info.value) == "[400:idempotency_key_reused] already used"
+
+    def test_a_reused_key_from_the_quote_stale_retry_is_also_hinted(self):
+        """The retry POST sits inside the 409 handler; it must be covered too,
+        and it ships the server's fresh ceiling, so the caller's key is now
+        mismatched against that number rather than the first one."""
+        stale = DatasetConflictError(
+            message="stale", error_code="quote_stale", quote={"items": {"new": 940}}
+        )
+        reused = APIError(
+            message="already used", status_code=400, error_code="idempotency_key_reused"
+        )
+        http = self._http([stale, reused])
+
+        with pytest.raises(APIError) as exc_info:
+            DatasetFeedClient(http, "creator-feed").download()
+
+        assert "re-quoted the ceiling to 940" in str(exc_info.value)
+
+    def test_the_hint_keeps_the_exception_type_and_its_siblings(self):
+        """Rebuilding it as a bare APIError would downgrade a subclass and drop
+        whatever structured data the parser attached."""
+        reused = DatasetConflictError(
+            message="already used",
+            error_code="idempotency_key_reused",
+            details={"supported_formats": ["jsonl"]},
+        )
+        http = self._http([reused])
+        http.get.return_value = {**MOCK_QUOTE, "items": {"new": 0, "owned": 10, "total": 10}}
+
+        with pytest.raises(DatasetConflictError) as exc_info:
+            DatasetFeedClient(http, "creator-feed").download(idempotency_key="k-1")
+
+        assert "re-quoted the ceiling to 0" in str(exc_info.value)
+        assert exc_info.value.details["supported_formats"] == ["jsonl"]
 
     def test_quote_stale_retries_once_with_the_same_key_and_the_fresh_ceiling(self):
         """A refusal releases the key, so the same key is the correct retry."""
@@ -858,6 +936,25 @@ class TestAsyncDatasets:
                 raise RuntimeError("consumer blew up")
 
         assert not any("/ack/" in call[0][0] for call in http.post.call_args_list)
+
+    async def test_a_page_without_a_total_is_not_read_as_the_last_page(self):
+        """The async twin must not under-read and then ack either."""
+        http = AsyncMock()
+        http.post.side_effect = _routed({"/pull/": MOCK_PULL_OK, "/ack/": MOCK_ACKED})
+        http.get.side_effect = [
+            {"results": [{"h": "a"}, {"h": "b"}]},
+            {"results": [{"h": "c"}]},
+        ]
+
+        rows = [
+            r
+            async for r in AsyncDatasetFeedClient(http, "creator-feed").pull_and_iterate(
+                page_size=2
+            )
+        ]
+
+        assert [r["h"] for r in rows] == ["a", "b", "c"]
+        assert any("/ack/" in call[0][0] for call in http.post.call_args_list)
 
     async def test_download_sends_the_key_and_retries_quote_stale_once(self):
         stale = DatasetConflictError(

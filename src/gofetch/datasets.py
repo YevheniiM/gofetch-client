@@ -93,14 +93,34 @@ async def alist_page(
     return _as_page(response, offset, limit)
 
 
+def _exhausted(response: dict[str, Any], page: ListPage, offset: int, limit: int) -> bool:
+    """Whether that was the last page.
+
+    The server's ``total`` decides when it sends one. When it does not, page
+    until a SHORT page rather than believing the ``len(rows)`` fallback
+    ``_as_page`` fills in — that fallback always equals the rows just read, so
+    trusting it would end iteration after page one. `pull_and_iterate` acks on
+    exhaustion, and the ack is the charge, so an under-read there bills the
+    customer for rows the SDK never handed them.
+    """
+    if not page:
+        return True
+    total = response.get("total")
+    if isinstance(total, int):
+        return offset >= total
+    return len(page) < limit
+
+
 def iter_rows(http: HTTPClient, path: str, *, page_size: int) -> Iterator[dict[str, Any]]:
     """Every row of a paginated dataset route, one page at a time."""
+    limit = clamp_limit(page_size)
     offset = 0
     while True:
-        page = list_page(http, path, limit=page_size, offset=offset)
+        response = http.get(path, params={"limit": limit, "offset": offset})
+        page = _as_page(response, offset, limit)
         yield from page
         offset += len(page)
-        if not page or offset >= page.total:
+        if _exhausted(response, page, offset, limit):
             return
 
 
@@ -108,13 +128,15 @@ async def aiter_rows(
     http: AsyncHTTPClient, path: str, *, page_size: int
 ) -> AsyncIterator[dict[str, Any]]:
     """Every row of a paginated dataset route, one page at a time."""
+    limit = clamp_limit(page_size)
     offset = 0
     while True:
-        page = await alist_page(http, path, limit=page_size, offset=offset)
+        response = await http.get(path, params={"limit": limit, "offset": offset})
+        page = _as_page(response, offset, limit)
         for row in page:
             yield row
         offset += len(page)
-        if not page or offset >= page.total:
+        if _exhausted(response, page, offset, limit):
             return
 
 
@@ -141,7 +163,7 @@ def _fresh_expected_items(error: DatasetConflictError) -> int:
     return expected
 
 
-def _replay_hint(error: APIError, requoted_to: int) -> APIError:
+def _add_replay_hint(error: APIError, requoted_to: int) -> None:
     """Say what actually recovers a purchase after ``idempotency_key_reused``.
 
     The server fingerprints the key on ``expected_items``, and ``download()``
@@ -150,19 +172,20 @@ def _replay_hint(error: APIError, requoted_to: int) -> APIError:
     with a different ceiling and reads as a different purchase. The server's own
     advice — mint a fresh key — abandons the receipt that was already paid for,
     so the ceiling to replay with is named here instead.
+
+    Rewritten in place on the exception the parser already built, so the caller
+    re-raises that same object with a bare ``raise``: rebuilding it would
+    downgrade a more specific subclass to the base type and drop whatever
+    structured siblings it carries.
     """
-    return APIError(
-        message=(
-            f"{error.message} This call re-quoted the ceiling to {requoted_to}, "
-            f"which is what made the key look like a different purchase. To get "
-            f"the original receipt back, replay with both the same key and the "
-            f"expected_items you first bought with: "
-            f"download(idempotency_key=..., expected_items=<original ceiling>)."
-        ),
-        status_code=error.status_code,
-        error_code=error.error_code,
-        details=error.details,
+    error.message = (
+        f"{error.message} This call re-quoted the ceiling to {requoted_to}, "
+        f"which is what made the key look like a different purchase. To get "
+        f"the original receipt back, replay with both the same key and the "
+        f"expected_items you first bought with: "
+        f"download(idempotency_key=..., expected_items=<original ceiling>)."
     )
+    error.args = (error.message,)
 
 
 def _put_presigned(url: str, body: bytes) -> None:
@@ -398,20 +421,22 @@ class DatasetFeedClient:
         headers = {IDEMPOTENCY_KEY_HEADER: key}
 
         try:
-            return self._http.post(
-                path, json=_download_body(expected_items, format), headers=headers
-            )
-        except DatasetConflictError as e:
-            if e.code != "quote_stale":
-                raise
-            return self._http.post(
-                path,
-                json=_download_body(_fresh_expected_items(e), format),
-                headers=headers,
-            )
+            try:
+                return self._http.post(
+                    path, json=_download_body(expected_items, format), headers=headers
+                )
+            except DatasetConflictError as e:
+                if e.code != "quote_stale":
+                    raise
+                # The retry ships the server's fresh ceiling, so it is no longer
+                # the one the caller named either.
+                expected_items, requoted = _fresh_expected_items(e), True
+                return self._http.post(
+                    path, json=_download_body(expected_items, format), headers=headers
+                )
         except APIError as e:
             if requoted and e.error_code == "idempotency_key_reused":
-                raise _replay_hint(e, expected_items) from e
+                _add_replay_hint(e, expected_items)
             raise
 
     def exports(self, *, limit: int = 25, offset: int = 0) -> ListPage:
@@ -683,20 +708,22 @@ class AsyncDatasetFeedClient:
         headers = {IDEMPOTENCY_KEY_HEADER: key}
 
         try:
-            return await self._http.post(
-                path, json=_download_body(expected_items, format), headers=headers
-            )
-        except DatasetConflictError as e:
-            if e.code != "quote_stale":
-                raise
-            return await self._http.post(
-                path,
-                json=_download_body(_fresh_expected_items(e), format),
-                headers=headers,
-            )
+            try:
+                return await self._http.post(
+                    path, json=_download_body(expected_items, format), headers=headers
+                )
+            except DatasetConflictError as e:
+                if e.code != "quote_stale":
+                    raise
+                # The retry ships the server's fresh ceiling, so it is no longer
+                # the one the caller named either.
+                expected_items, requoted = _fresh_expected_items(e), True
+                return await self._http.post(
+                    path, json=_download_body(expected_items, format), headers=headers
+                )
         except APIError as e:
             if requoted and e.error_code == "idempotency_key_reused":
-                raise _replay_hint(e, expected_items) from e
+                _add_replay_hint(e, expected_items)
             raise
 
     async def exports(self, *, limit: int = 25, offset: int = 0) -> ListPage:

@@ -357,29 +357,59 @@ errors: they simply carry no batch.
 
 ```python
 receipt = feed.download()                       # quotes, then buys. This moves money.
+                                                # for a recoverable purchase see below
 export = feed.export(receipt["export_id"]).wait_for_ready()
 feed.export(receipt["export_id"]).download_to("creators.jsonl")
 ```
 
 `download()` always sends an `Idempotency-Key` — the API rejects a request without one — and
 reuses that key for its single automatic `quote_stale` retry, so a retried purchase cannot buy
-twice. The generated key dies with your process, so **pass your own key if the purchase must
-survive a restart**:
+twice.
+
+### Surviving a restart: the key AND its ceiling
+
+The generated key dies with your process, so pass your own if the purchase must survive a
+restart. **The key on its own is not enough.** The server fingerprints it together with
+`expected_items`, and `download()` re-quotes that ceiling on every call — so once the first
+purchase has landed, `items.new` is `0`, and a bare same-key retry arrives as
+`expected_items: 0`, which reads as a *different* purchase and is refused
+`400 idempotency_key_reused`.
+
+Record both, and replay both:
 
 ```python
-feed.download(idempotency_key="nightly-2026-09-06")   # one key per purchase, reused on retry
+import uuid
+
+key = uuid.uuid4().hex                 # one key per purchase — see below
+ceiling = feed.quote()["items"]["new"]
+persist(key, ceiling)                  # BEFORE the call, so a crash mid-purchase is recoverable
+
+receipt = feed.download(idempotency_key=key, expected_items=ceiling)
 ```
 
-After a failure, which key to use:
+```python
+key, ceiling = load()                  # after the restart
+receipt = feed.download(idempotency_key=key, expected_items=ceiling)
+```
+
+That returns the original receipt verbatim and bills nothing further. `download()` raises with
+the re-quoted ceiling named in the message if you replay a key without its `expected_items`.
+
+**Use a uuid per purchase, not a naming scheme.** Keys are scoped `(dataset, key)` per
+*organization*, so two of your services sharing a scheme like `nightly-<date>` will replay each
+other's receipts and hand back an export the other one bought.
+
+### After a failure
 
 | After | Key |
 |---|---|
-| Network error, timeout, any 5xx, `409 download_in_progress` | **Reuse the same key** — money may have moved, and only the original key replays that receipt |
-| Any 4xx refusal | A fresh key is safe — nothing was billed. Prefer one if a reused key starts answering `download_in_progress` |
+| Network error, timeout, any 5xx, `409 download_in_progress` | **Reuse the same key**, with the same `expected_items` — money may have moved, and only that pair replays the receipt |
+| A 4xx refusal *before* any purchase landed | A fresh key is safe — nothing was billed |
 
-`400 idempotency_key_reused` means the key belongs to a *different* purchase (a different
-`expected_items` or `format`), never "try again" — mint a fresh one. It fires while the first
-request is still in flight too.
+`400 idempotency_key_reused` is **not** "try again", and is **not** a reason to mint a fresh key
+— a fresh key buys the export a second time and abandons the one already paid for. It means the
+key was sent with a different `expected_items` or `format` than the purchase it belongs to;
+replay it with the original ceiling. It also fires while the first request is still in flight.
 
 `billed_items: 0` with `billed_amount: "0.0000"` is a **successful free download** — there was
 nothing new to buy. Do not read it as a failure.

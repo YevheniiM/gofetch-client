@@ -24,7 +24,6 @@ class DatasetBatchClient:
 
     def __init__(self, http: HTTPClient, slug: str, batch_id: str) -> None:
         self._http = http
-        self._batch_id = batch_id
         self._path = f"{DATASETS_PATH}{slug}/batches/{batch_id}/"
 
     def get(self) -> dict[str, Any] | None:
@@ -95,7 +94,6 @@ class AsyncDatasetBatchClient:
 
     def __init__(self, http: AsyncHTTPClient, slug: str, batch_id: str) -> None:
         self._http = http
-        self._batch_id = batch_id
         self._path = f"{DATASETS_PATH}{slug}/batches/{batch_id}/"
 
     async def get(self) -> dict[str, Any] | None:
