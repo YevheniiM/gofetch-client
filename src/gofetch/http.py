@@ -28,23 +28,99 @@ from gofetch.constants import (
 from gofetch.exceptions import (
     APIError,
     AuthenticationError,
+    BatchExpiredError,
+    DatasetConflictError,
+    InsufficientCreditsError,
     RateLimitError,
 )
+
+# A non-JSON error body is a whole document — a Django "Not Found" HTML page for
+# a URL that never reached the app — so it is truncated rather than dumped into
+# the exception message.
+ERROR_TEXT_LIMIT = 200
+
+
+def _short(text: str | None) -> str:
+    """A body that is not JSON, cut to something readable."""
+    text = (text or "").strip()
+    if not text:
+        return "Unknown error"
+    return text if len(text) <= ERROR_TEXT_LIMIT else text[:ERROR_TEXT_LIMIT] + "..."
+
+
+def _error_body(response: httpx.Response) -> dict[str, Any]:
+    """The error body as a dict, whatever shape the server actually sent.
+
+    DRF renders ``raise ValidationError('<string>')`` as a bare JSON **list**,
+    which the datasets API does on a couple of paths. Reading keys off that
+    directly raised ``AttributeError`` — escaping every ``except GoFetchError``
+    a caller wrote — so a non-dict body is normalised into one here.
+    """
+    try:
+        data = response.json()
+    except Exception:
+        return {"message": _short(response.text)}
+
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, list):
+        return {"message": "; ".join(str(item) for item in data) or "Unknown error"}
+    return {"message": str(data)}
 
 
 def _handle_error_response(response: httpx.Response) -> None:
     """Parse error response and raise appropriate exception."""
-    try:
-        error_data = response.json()
-    except Exception:
-        error_data = {"message": response.text or "Unknown error"}
+    error_data = _error_body(response)
 
-    error_message = error_data.get("message", error_data.get("error", "Unknown error"))
-    error_code = error_data.get("error")
-    details = error_data.get("details", {})
+    # `detail` first: it is what DRF and every datasets refusal use. `message`
+    # appears only on field-validation errors, `error` only on older job errors.
+    error_message = (
+        error_data.get("detail")
+        or error_data.get("message")
+        or error_data.get("error")
+        or "Unknown error"
+    )
+    if not isinstance(error_message, str):
+        error_message = str(error_message)
+
+    # The machine-readable code lives at `errors.code`. Field-validation errors
+    # put `{field: [messages]}` in the same place, so only a string counts.
+    errors = error_data.get("errors")
+    code = errors.get("code") if isinstance(errors, dict) else None
+    error_code = code if isinstance(code, str) else error_data.get("error")
+
+    # The structured siblings a refusal rides along with, so the caller never
+    # has to re-parse the body to find them.
+    details = dict(error_data.get("details") or {})
+    for key in ("constraints", "quote", "supported_formats"):
+        if key in error_data:
+            details.setdefault(key, error_data[key])
 
     if response.status_code == 401:
         raise AuthenticationError(message=error_message, details=details)
+
+    if response.status_code == 402:
+        raise InsufficientCreditsError(
+            message=error_message,
+            constraints=error_data.get("constraints") or [],
+            error_code=error_code,
+            details=details,
+        )
+
+    if response.status_code == 409:
+        raise DatasetConflictError(
+            message=error_message,
+            error_code=error_code,
+            quote=error_data.get("quote"),
+            details=details,
+        )
+
+    if response.status_code == 410:
+        raise BatchExpiredError(
+            message=error_message,
+            error_code=error_code,
+            details=details,
+        )
 
     if response.status_code == 429:
         retry_after = None
@@ -111,6 +187,7 @@ class HTTPClient:
         self,
         path: str,
         params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """
         Make a GET request.
@@ -118,6 +195,7 @@ class HTTPClient:
         Args:
             path: API path (e.g., "/api/v1/jobs/")
             params: Query parameters
+            headers: Extra headers, merged over the client defaults
 
         Returns:
             Response JSON as dict
@@ -127,13 +205,14 @@ class HTTPClient:
             AuthenticationError: If authentication fails (401)
             RateLimitError: If rate limited (429)
         """
-        return self._request("GET", path, params=params)
+        return self._request("GET", path, params=params, headers=headers)
 
     def post(
         self,
         path: str,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """
         Make a POST request.
@@ -142,25 +221,28 @@ class HTTPClient:
             path: API path
             json: Request body as JSON
             params: Query parameters
+            headers: Extra headers, merged over the client defaults
 
         Returns:
             Response JSON as dict
         """
-        return self._request("POST", path, json=json, params=params)
+        return self._request("POST", path, json=json, params=params, headers=headers)
 
     def patch(
         self,
         path: str,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Make a PATCH request."""
-        return self._request("PATCH", path, json=json, params=params)
+        return self._request("PATCH", path, json=json, params=params, headers=headers)
 
     def delete(
         self,
         path: str,
         params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """
         Make a DELETE request.
@@ -168,11 +250,12 @@ class HTTPClient:
         Args:
             path: API path
             params: Query parameters
+            headers: Extra headers, merged over the client defaults
 
         Returns:
             Response JSON as dict, or empty dict if no content
         """
-        return self._request("DELETE", path, params=params)
+        return self._request("DELETE", path, params=params, headers=headers)
 
     def _request(
         self,
@@ -180,15 +263,21 @@ class HTTPClient:
         path: str,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """
         Make an HTTP request with retry logic.
+
+        Every attempt resends the same headers, so an ``Idempotency-Key`` the
+        caller set covers the automatic retries too — which is what makes
+        retrying a money-moving POST safe.
 
         Args:
             method: HTTP method
             path: API path
             json: Request body
             params: Query parameters
+            headers: Extra headers, merged over the client defaults
 
         Returns:
             Response JSON
@@ -206,6 +295,7 @@ class HTTPClient:
                     url=path,
                     json=json,
                     params=params,
+                    headers=headers,
                 )
 
                 # Check for errors
@@ -306,35 +396,39 @@ class AsyncHTTPClient:
         self,
         path: str,
         params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Make a GET request."""
-        return await self._request("GET", path, params=params)
+        return await self._request("GET", path, params=params, headers=headers)
 
     async def post(
         self,
         path: str,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Make a POST request."""
-        return await self._request("POST", path, json=json, params=params)
+        return await self._request("POST", path, json=json, params=params, headers=headers)
 
     async def patch(
         self,
         path: str,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Make a PATCH request."""
-        return await self._request("PATCH", path, json=json, params=params)
+        return await self._request("PATCH", path, json=json, params=params, headers=headers)
 
     async def delete(
         self,
         path: str,
         params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Make a DELETE request."""
-        return await self._request("DELETE", path, params=params)
+        return await self._request("DELETE", path, params=params, headers=headers)
 
     async def _request(
         self,
@@ -342,8 +436,14 @@ class AsyncHTTPClient:
         path: str,
         json: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Make an HTTP request with retry logic."""
+        """Make an HTTP request with retry logic.
+
+        Every attempt resends the same headers, so an ``Idempotency-Key`` the
+        caller set covers the automatic retries too — which is what makes
+        retrying a money-moving POST safe.
+        """
         import asyncio
 
         last_exception: Exception | None = None
@@ -356,6 +456,7 @@ class AsyncHTTPClient:
                     url=path,
                     json=json,
                     params=params,
+                    headers=headers,
                 )
 
                 if response.status_code >= 400:
