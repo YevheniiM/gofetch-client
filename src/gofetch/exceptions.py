@@ -142,9 +142,10 @@ class DatasetConflictError(APIError):
         code: The machine-readable ``errors.code``, when the API sent one. Not
             every 409 carries one, so branch on this only as enrichment.
         quote: The fresh quote that rides along with ``quote_stale``. ``None``
-            on every other conflict — notably ``download_in_progress``, which
-            omits it deliberately because it is the answer that says "do not
-            retry, your purchase may already have happened".
+            on ``download_in_progress`` and ``ledger_conflict``, which omit it
+            deliberately — a quote is what a caller retries *with*, and
+            ``download_in_progress`` exists to say "do not retry, your purchase
+            may already have happened". Never assume it is present.
 
     Which codes are recoverable:
 
@@ -157,8 +158,10 @@ class DatasetConflictError(APIError):
     - ``open_batch_blocks_download`` — ack the open pull batch first, then retry.
     - ``batch_not_acked`` — only an acked batch has rows to export.
     - ``export_already_ready`` — the file is built; download it instead.
-    - ``download_in_progress`` — do NOT retry automatically. Read the export
-      list to find out whether the purchase landed.
+    - ``download_in_progress`` — do NOT retry automatically, and do NOT mint a
+      new key: money may already have moved, and only the original key replays
+      that receipt. Read the export list to find out whether the purchase
+      landed.
     - ``reservation_divergence`` — not retryable. The database was edited under
       a live batch; contact support.
     """

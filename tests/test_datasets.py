@@ -371,6 +371,41 @@ class TestPullAndIterate:
         assert len(rows) == 2
         assert self._acked(http)
 
+    def test_dataset_paused_propagates_and_never_acks(self):
+        """The pause is checked BEFORE the open batch is re-served, so pull()
+        cannot see a batch the customer still owns. Swallowing this 409 would
+        look like "no rows today" while their batch quietly expires."""
+        http = MagicMock()
+        http.post.side_effect = DatasetConflictError(
+            message="This dataset is paused.", error_code="dataset_paused"
+        )
+
+        with pytest.raises(DatasetConflictError) as exc_info:
+            list(DatasetFeedClient(http, "creator-feed").pull_and_iterate())
+
+        assert exc_info.value.code == "dataset_paused"
+        assert not self._acked(http)
+
+    def test_an_open_batch_is_still_readable_and_ackable_while_paused(self):
+        """The documented recovery: get()["open_batch"] -> rows -> ack."""
+        http = MagicMock()
+        http.get.side_effect = _routed(
+            {
+                "/creator-feed/": {**MOCK_OVERVIEW, "open_batch": MOCK_BATCH},
+                "/rows/": _rows_page([{"h": "a"}], 1),
+            }
+        )
+        http.post.side_effect = _routed({"/ack/": MOCK_ACKED})
+        feed = DatasetFeedClient(http, "creator-feed")
+
+        open_batch = feed.get()["open_batch"]
+        batch = feed.batch(open_batch["batch_id"])
+        rows = list(batch.iterate_rows())
+        result = batch.ack()
+
+        assert [r["h"] for r in rows] == ["a"]
+        assert result["batch"]["billed_amount"] == "14.8500"
+
     def test_expired_batch_surfaces_as_batch_expired_error(self):
         http = self._http()
         http.get.side_effect = BatchExpiredError(message="rows released back to the pool")
@@ -481,6 +516,51 @@ class TestDownload:
         with pytest.raises(DatasetConflictError):
             DatasetFeedClient(http, "creator-feed").download()
 
+        assert http.post.call_count == 1
+
+    def test_a_zero_billed_download_is_a_success(self):
+        """The upload `nothing_new` path accepts an export with no batch behind
+        it. Zero is a free download, not a failure."""
+        nothing_new = {
+            "export_id": "3f2b7c40-0000-4000-8000-000000000002",
+            "status": "pending",
+            "format": "jsonl",
+            "batch_id": None,
+            "billed_items": 0,
+            "billed_amount": "0.0000",
+            "constraints": [{"code": "nothing_new", "message": "Nothing new to buy."}],
+        }
+        http = self._http([nothing_new])
+
+        result = DatasetFeedClient(http, "creator-feed").download()
+
+        assert result["billed_items"] == 0
+        assert result["billed_amount"] == "0.0000"
+        assert result["export_id"]
+
+    def test_quote_stale_without_a_quote_is_re_raised_not_retried_blind(self):
+        """`quote` is absent on download_in_progress, idempotency_key_reused,
+        unsupported_format and ledger_conflict — never assume it is there."""
+        stale = DatasetConflictError(message="stale", error_code="quote_stale", quote=None)
+        http = self._http([stale])
+
+        with pytest.raises(DatasetConflictError):
+            DatasetFeedClient(http, "creator-feed").download()
+
+        assert http.post.call_count == 1
+
+    def test_idempotency_key_reused_is_not_retried(self):
+        """400, and it means a different purchase — never "try again"."""
+        http = self._http([APIError(
+            message="This Idempotency-Key was already used for a different download.",
+            status_code=400,
+            error_code="idempotency_key_reused",
+        )])
+
+        with pytest.raises(APIError) as exc_info:
+            DatasetFeedClient(http, "creator-feed").download(idempotency_key="k-1")
+
+        assert exc_info.value.error_code == "idempotency_key_reused"
         assert http.post.call_count == 1
 
     def test_billed_amount_comes_back_as_the_exact_string(self):

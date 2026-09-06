@@ -26,7 +26,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing is acked and nothing is charged, so a re-pull re-serves the same batch.
 - `feed.download()` always sends an `Idempotency-Key` (the API rejects a request without one)
   and reuses that key for its single `quote_stale` retry, so a retried purchase cannot buy
-  twice. Pass your own key if the purchase must survive a process restart.
+  twice. Pass your own key if the purchase must survive a process restart. Reuse the same key
+  after a network error, a timeout, any 5xx or `409 download_in_progress` — money may have
+  moved; a fresh key is safe after any 4xx refusal.
 - `InsufficientCreditsError` (402, with `.constraints`), `BatchExpiredError` (410) and
   `DatasetConflictError` (409, with `.code` and `.quote`). All subclass `APIError`.
 - `PullStatus`, `BatchState`, `ExportStatus`, `DatasetKind`, `QuoteKind` enums, and

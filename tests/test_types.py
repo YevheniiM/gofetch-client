@@ -226,6 +226,21 @@ class TestDatasetTypes:
         assert export.status == "ready"
         assert export.url is not None
 
+    def test_accepted_export_allows_a_zero_billed_purchase(self) -> None:
+        """The upload `nothing_new` path has no batch behind it."""
+        accepted = DatasetDownloadAccepted(
+            export_id="3f2b7c40-0000-4000-8000-000000000002",
+            status="pending",
+            format="jsonl",
+            batch_id=None,
+            billed_items=0,
+            billed_amount="0.0000",
+            constraints=[{"code": "nothing_new", "message": "Nothing new to buy."}],
+        )
+        assert accepted.billed_items == 0
+        assert accepted.billed_amount == "0.0000"
+        assert accepted.batch_id is None
+
     def test_money_is_typed_str_not_float(self) -> None:
         """A float round-trip is how a sub-cent charge stops matching the ledger."""
         for model, field in (

@@ -326,6 +326,18 @@ and it runs only after the last row has been yielded, so:
   the rows go back to the pool, and they are re-offered on a later pull. Losing an unacked batch
   costs data latency, not money.
 
+If the dataset is **paused** mid-flight, `pull()` raises `409 dataset_paused` — the pause is
+checked before an open batch is re-served, so a batch you already hold goes invisible to `pull()`.
+It is still yours, and still ackable:
+
+```python
+open_batch = feed.get()["open_batch"]
+if open_batch:
+    batch = feed.batch(open_batch["batch_id"])
+    rows = list(batch.iterate_rows())
+    batch.ack()
+```
+
 The steps are available on their own if you want to drive them yourself:
 
 ```python
@@ -357,6 +369,20 @@ survive a restart**:
 ```python
 feed.download(idempotency_key="nightly-2026-09-06")   # one key per purchase, reused on retry
 ```
+
+After a failure, which key to use:
+
+| After | Key |
+|---|---|
+| Network error, timeout, any 5xx, `409 download_in_progress` | **Reuse the same key** — money may have moved, and only the original key replays that receipt |
+| Any 4xx refusal | A fresh key is safe — nothing was billed. Prefer one if a reused key starts answering `download_in_progress` |
+
+`400 idempotency_key_reused` means the key belongs to a *different* purchase (a different
+`expected_items` or `format`), never "try again" — mint a fresh one. It fires while the first
+request is still in flight too.
+
+`billed_items: 0` with `billed_amount: "0.0000"` is a **successful free download** — there was
+nothing new to buy. Do not read it as a failure.
 
 `feed.quote()` tells you what it would cost, for free. `expected_items` is a ceiling, not an
 equality: a claim larger than it is refused, a smaller one proceeds and says `fewer_than_quoted`
@@ -492,8 +518,9 @@ except BatchExpiredError:                      # 410 on rows() — nothing was b
 
 `e.code` is the API's `errors.code`, and is `None` on the 409s that do not send one — branch on
 the status first and treat the code as enrichment. `e.quote` carries the fresh quote on
-`quote_stale` only. `e.details` carries `constraints`, `quote` and `supported_formats` when the
-response had them.
+`quote_stale`; it is deliberately absent on `download_in_progress`, `ledger_conflict`,
+`idempotency_key_reused` and `unsupported_format`, so never assume it is there. `e.details`
+carries `constraints`, `quote` and `supported_formats` when the response had them.
 
 ## Development
 

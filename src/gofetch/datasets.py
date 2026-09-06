@@ -126,7 +126,13 @@ def _download_body(expected_items: int, format: str | None) -> dict[str, Any]:
 
 
 def _fresh_expected_items(error: DatasetConflictError) -> int:
-    """The ceiling to retry a ``quote_stale`` refusal with."""
+    """The ceiling to retry a ``quote_stale`` refusal with.
+
+    Never assume the quote is there: ``download_in_progress``,
+    ``idempotency_key_reused``, ``unsupported_format`` and ``ledger_conflict``
+    all omit it deliberately. A ``quote_stale`` without one is re-raised rather
+    than retried blind.
+    """
     quote = error.quote or {}
     items = quote.get("items") or {}
     expected = items.get("new")
@@ -270,6 +276,14 @@ class DatasetFeedClient:
                 open — you must ack it yourself, or it expires after
                 ``config.ack_ttl_hours`` and the rows go back to the pool.
             page_size: Rows per request, clamped to 100 by the server.
+
+        Raises:
+            DatasetConflictError: ``dataset_paused`` — an operator retired the
+                dataset. The pause is checked *before* an open batch is
+                re-served, so a batch you already hold goes invisible to
+                ``pull()``. It is still yours, still readable and still
+                ackable: recover it with ``get()["open_batch"]``, then
+                ``batch(id).iterate_rows()`` and ``batch(id).ack()``.
         """
         response = self.pull()
         batch = response.get("batch")
@@ -303,7 +317,9 @@ class DatasetFeedClient:
         smaller one proceeds and says ``fewer_than_quoted`` in ``constraints``.
         Returns the 202 receipt: ``export_id``, ``status``, ``billed_items`` and
         ``billed_amount`` (a decimal string — do not float it). Poll the export
-        with ``feed.export(export_id).wait_for_ready()``.
+        with ``feed.export(export_id).wait_for_ready()``. ``billed_items`` is
+        ``0`` and ``billed_amount`` ``"0.0000"`` when there was nothing new to
+        buy — a successful free download, not a failure.
 
         Args:
             expected_items: The ceiling. Defaults to ``quote()["items"]["new"]``.
@@ -316,13 +332,30 @@ class DatasetFeedClient:
                 own** if the purchase must survive a restart: only the original
                 key replays the first result instead of buying again.
 
+        After a failure, which key to use, in one rule: **reuse the same key
+        after a network error, a timeout, any 5xx, or ``409
+        download_in_progress``** — money may already have moved, and only the
+        original key replays that receipt instead of buying again. After any
+        4xx refusal a **fresh key is safe**, because nothing was billed; prefer
+        one if a reused key starts answering ``download_in_progress``. (A 4xx
+        usually releases the key, but one raised internally rather than returned
+        holds it, so a reused key can wedge.)
+
         Raises:
             DatasetConflictError: On a 409. ``quote_stale`` is retried once
-                automatically with the fresh ceiling and the same key (a refusal
-                releases the key, so nothing was billed).
+                automatically with the fresh ceiling and the same key (that
+                refusal releases the key, so nothing was billed).
                 ``download_in_progress`` is never retried — it means the
                 purchase may already have happened.
             InsufficientCreditsError: On a 402, with ``.constraints``.
+            APIError: On a 400. ``idempotency_key_required`` and
+                ``idempotency_key_invalid`` mean a bad header (the SDK always
+                sends a valid one). ``idempotency_key_reused`` means this key
+                belongs to a *different* purchase — a different
+                ``expected_items`` or ``format`` — so it is never "try again",
+                mint a fresh key; it fires while the first request is still in
+                flight too. ``unsupported_format`` puts the accepted values in
+                ``err.details["supported_formats"]``.
         """
         key = idempotency_key or uuid4().hex
         if expected_items is None:
@@ -514,6 +547,14 @@ class AsyncDatasetFeedClient:
                 open — you must ack it yourself, or it expires after
                 ``config.ack_ttl_hours`` and the rows go back to the pool.
             page_size: Rows per request, clamped to 100 by the server.
+
+        Raises:
+            DatasetConflictError: ``dataset_paused`` — an operator retired the
+                dataset. The pause is checked *before* an open batch is
+                re-served, so a batch you already hold goes invisible to
+                ``pull()``. It is still yours, still readable and still
+                ackable: recover it with ``get()["open_batch"]``, then
+                ``batch(id).iterate_rows()`` and ``batch(id).ack()``.
         """
         response = await self.pull()
         batch = response.get("batch")
@@ -548,7 +589,9 @@ class AsyncDatasetFeedClient:
         smaller one proceeds and says ``fewer_than_quoted`` in ``constraints``.
         Returns the 202 receipt: ``export_id``, ``status``, ``billed_items`` and
         ``billed_amount`` (a decimal string — do not float it). Poll the export
-        with ``feed.export(export_id).wait_for_ready()``.
+        with ``feed.export(export_id).wait_for_ready()``. ``billed_items`` is
+        ``0`` and ``billed_amount`` ``"0.0000"`` when there was nothing new to
+        buy — a successful free download, not a failure.
 
         Args:
             expected_items: The ceiling. Defaults to ``quote()["items"]["new"]``.
@@ -561,13 +604,30 @@ class AsyncDatasetFeedClient:
                 own** if the purchase must survive a restart: only the original
                 key replays the first result instead of buying again.
 
+        After a failure, which key to use, in one rule: **reuse the same key
+        after a network error, a timeout, any 5xx, or ``409
+        download_in_progress``** — money may already have moved, and only the
+        original key replays that receipt instead of buying again. After any
+        4xx refusal a **fresh key is safe**, because nothing was billed; prefer
+        one if a reused key starts answering ``download_in_progress``. (A 4xx
+        usually releases the key, but one raised internally rather than returned
+        holds it, so a reused key can wedge.)
+
         Raises:
             DatasetConflictError: On a 409. ``quote_stale`` is retried once
-                automatically with the fresh ceiling and the same key (a refusal
-                releases the key, so nothing was billed).
+                automatically with the fresh ceiling and the same key (that
+                refusal releases the key, so nothing was billed).
                 ``download_in_progress`` is never retried — it means the
                 purchase may already have happened.
             InsufficientCreditsError: On a 402, with ``.constraints``.
+            APIError: On a 400. ``idempotency_key_required`` and
+                ``idempotency_key_invalid`` mean a bad header (the SDK always
+                sends a valid one). ``idempotency_key_reused`` means this key
+                belongs to a *different* purchase — a different
+                ``expected_items`` or ``format`` — so it is never "try again",
+                mint a fresh key; it fires while the first request is still in
+                flight too. ``unsupported_format`` puts the accepted values in
+                ``err.details["supported_formats"]``.
         """
         key = idempotency_key or uuid4().hex
         if expected_items is None:
