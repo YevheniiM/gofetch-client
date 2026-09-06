@@ -465,6 +465,45 @@ class TestDownload:
             IDEMPOTENCY_KEY_HEADER: "nightly-2026-09-06"
         }
 
+    def test_reused_key_after_a_requote_names_the_ceiling_that_replays(self):
+        """Live local proof (2026-09-06): the server fingerprints the key on
+        `expected_items`, and download() re-quotes it. After the first purchase
+        landed, items.new was 0, so POST {"expected_items": 0} with the same key
+        answered 400 idempotency_key_reused while POST {"expected_items": 10}
+        replayed the receipt verbatim. The server says "mint a fresh key", which
+        abandons the export already paid for, so the SDK names the real fix."""
+        reused = APIError(
+            message=(
+                "This Idempotency-Key was already used for a different download. "
+                "A new purchase needs a new key; reuse a key only to retry the "
+                "request it was issued for."
+            ),
+            status_code=400,
+            error_code="idempotency_key_reused",
+        )
+        http = self._http(reused)
+        http.get.return_value = {**MOCK_QUOTE, "items": {"new": 0, "owned": 10, "total": 10}}
+
+        with pytest.raises(APIError) as exc_info:
+            DatasetFeedClient(http, "creator-feed").download(idempotency_key="nightly")
+
+        assert exc_info.value.error_code == "idempotency_key_reused"
+        assert "re-quoted the ceiling to 0" in str(exc_info.value)
+        assert "expected_items" in str(exc_info.value)
+
+    def test_a_reused_key_on_an_explicit_ceiling_is_left_alone(self):
+        """Nothing was re-quoted, so the server's own message is the whole truth."""
+        reused = APIError(message="already used", status_code=400,
+                          error_code="idempotency_key_reused")
+        http = self._http(reused)
+
+        with pytest.raises(APIError) as exc_info:
+            DatasetFeedClient(http, "creator-feed").download(
+                idempotency_key="nightly", expected_items=10
+            )
+
+        assert str(exc_info.value) == "[400:idempotency_key_reused] already used"
+
     def test_quote_stale_retries_once_with_the_same_key_and_the_fresh_ceiling(self):
         """A refusal releases the key, so the same key is the correct retry."""
         stale = DatasetConflictError(

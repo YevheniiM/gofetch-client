@@ -18,7 +18,7 @@ from uuid import uuid4
 import httpx
 
 from gofetch.constants import DATASET_MAX_PAGE_SIZE, IDEMPOTENCY_KEY_HEADER
-from gofetch.exceptions import DatasetConflictError, ValidationError
+from gofetch.exceptions import APIError, DatasetConflictError, ValidationError
 from gofetch.http import _handle_error_response
 from gofetch.types import ListPage
 
@@ -139,6 +139,30 @@ def _fresh_expected_items(error: DatasetConflictError) -> int:
     if not isinstance(expected, int):
         raise error
     return expected
+
+
+def _replay_hint(error: APIError, requoted_to: int) -> APIError:
+    """Say what actually recovers a purchase after ``idempotency_key_reused``.
+
+    The server fingerprints the key on ``expected_items``, and ``download()``
+    re-quotes that ceiling on every call. Once the first purchase has landed
+    ``items.new`` is 0, so an honest replay of a caller-supplied key arrives
+    with a different ceiling and reads as a different purchase. The server's own
+    advice — mint a fresh key — abandons the receipt that was already paid for,
+    so the ceiling to replay with is named here instead.
+    """
+    return APIError(
+        message=(
+            f"{error.message} This call re-quoted the ceiling to {requoted_to}, "
+            f"which is what made the key look like a different purchase. To get "
+            f"the original receipt back, replay with both the same key and the "
+            f"expected_items you first bought with: "
+            f"download(idempotency_key=..., expected_items=<original ceiling>)."
+        ),
+        status_code=error.status_code,
+        error_code=error.error_code,
+        details=error.details,
+    )
 
 
 def _put_presigned(url: str, body: bytes) -> None:
@@ -329,8 +353,15 @@ class DatasetFeedClient:
                 a second time. Defaults to a fresh ``uuid4().hex``, which the
                 automatic HTTP retries reuse because they resend the same
                 request. A generated key dies with the process, so **pass your
-                own** if the purchase must survive a restart: only the original
-                key replays the first result instead of buying again.
+                own** if the purchase must survive a restart — but the key alone
+                is not enough: the server fingerprints it together with
+                ``expected_items``, and this method re-quotes that ceiling on
+                every call. After the first purchase lands ``items.new`` is 0,
+                so a same-key retry that lets the ceiling be re-quoted arrives
+                as a *different* purchase and is refused
+                ``idempotency_key_reused``. **To replay, pass the key AND the
+                same ``expected_items`` you bought with** — that returns the
+                original receipt verbatim and bills nothing further.
 
         After a failure, which key to use, in one rule: **reuse the same key
         after a network error, a timeout, any 5xx, or ``409
@@ -352,12 +383,14 @@ class DatasetFeedClient:
                 ``idempotency_key_invalid`` mean a bad header (the SDK always
                 sends a valid one). ``idempotency_key_reused`` means this key
                 belongs to a *different* purchase — a different
-                ``expected_items`` or ``format`` — so it is never "try again",
-                mint a fresh key; it fires while the first request is still in
-                flight too. ``unsupported_format`` puts the accepted values in
-                ``err.details["supported_formats"]``.
+                ``expected_items`` or ``format`` — and it fires while the first
+                request is still in flight too. Minting a fresh key abandons the
+                receipt already paid for; replay with the original
+                ``expected_items`` instead. ``unsupported_format`` puts the
+                accepted values in ``err.details["supported_formats"]``.
         """
         key = idempotency_key or uuid4().hex
+        requoted = expected_items is None
         if expected_items is None:
             expected_items = self.quote()["items"]["new"]
 
@@ -376,6 +409,10 @@ class DatasetFeedClient:
                 json=_download_body(_fresh_expected_items(e), format),
                 headers=headers,
             )
+        except APIError as e:
+            if requoted and e.error_code == "idempotency_key_reused":
+                raise _replay_hint(e, expected_items) from e
+            raise
 
     def exports(self, *, limit: int = 25, offset: int = 0) -> ListPage:
         """One page of this dataset's exports, **without** ``url``.
@@ -601,8 +638,15 @@ class AsyncDatasetFeedClient:
                 a second time. Defaults to a fresh ``uuid4().hex``, which the
                 automatic HTTP retries reuse because they resend the same
                 request. A generated key dies with the process, so **pass your
-                own** if the purchase must survive a restart: only the original
-                key replays the first result instead of buying again.
+                own** if the purchase must survive a restart — but the key alone
+                is not enough: the server fingerprints it together with
+                ``expected_items``, and this method re-quotes that ceiling on
+                every call. After the first purchase lands ``items.new`` is 0,
+                so a same-key retry that lets the ceiling be re-quoted arrives
+                as a *different* purchase and is refused
+                ``idempotency_key_reused``. **To replay, pass the key AND the
+                same ``expected_items`` you bought with** — that returns the
+                original receipt verbatim and bills nothing further.
 
         After a failure, which key to use, in one rule: **reuse the same key
         after a network error, a timeout, any 5xx, or ``409
@@ -624,12 +668,14 @@ class AsyncDatasetFeedClient:
                 ``idempotency_key_invalid`` mean a bad header (the SDK always
                 sends a valid one). ``idempotency_key_reused`` means this key
                 belongs to a *different* purchase — a different
-                ``expected_items`` or ``format`` — so it is never "try again",
-                mint a fresh key; it fires while the first request is still in
-                flight too. ``unsupported_format`` puts the accepted values in
-                ``err.details["supported_formats"]``.
+                ``expected_items`` or ``format`` — and it fires while the first
+                request is still in flight too. Minting a fresh key abandons the
+                receipt already paid for; replay with the original
+                ``expected_items`` instead. ``unsupported_format`` puts the
+                accepted values in ``err.details["supported_formats"]``.
         """
         key = idempotency_key or uuid4().hex
+        requoted = expected_items is None
         if expected_items is None:
             expected_items = (await self.quote())["items"]["new"]
 
@@ -648,6 +694,10 @@ class AsyncDatasetFeedClient:
                 json=_download_body(_fresh_expected_items(e), format),
                 headers=headers,
             )
+        except APIError as e:
+            if requoted and e.error_code == "idempotency_key_reused":
+                raise _replay_hint(e, expected_items) from e
+            raise
 
     async def exports(self, *, limit: int = 25, offset: int = 0) -> ListPage:
         """One page of this dataset's exports, **without** ``url``.
