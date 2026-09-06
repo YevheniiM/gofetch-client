@@ -14,6 +14,7 @@ A drop-in replacement for `apify-client` that uses the GoFetch.io infrastructure
 - **13 scrapers**: Instagram (posts, profiles, comments), TikTok (videos, comments, identity resolve), YouTube, Facebook (posts, pages), Google SERP, cross-platform Profile Probe
 - **Sync and async** execution modes
 - **Webhook support** for asynchronous job notifications
+- **[Datasets](#datasets)**: pull/ack subscription feeds and paid downloads
 - **Full type hints** for better IDE support
 - **Automatic retries** with exponential backoff
 
@@ -293,6 +294,111 @@ len(page), page[0]         # plain list behaviour
 page.items, page.total     # apify-client's ListPage attributes (also offset, limit, desc)
 ```
 
+## Datasets
+
+A **dataset** here is the subscription product — a feed of rows you pull, read and ack, plus a
+paid one-shot download of everything new. It is **not** `client.dataset(job_id)`, which fetches
+one scraper job's results and is unchanged.
+
+| You want | Use |
+|---|---|
+| One scraper job's results | `client.dataset(job_id)` — the Apify-compatible client |
+| The Datasets product | `client.datasets()` and `client.dataset_feed(slug)` |
+
+There are no dataset webhooks. Polling is the only delivery mechanism.
+
+### The delivery loop
+
+```python
+feed = client.dataset_feed("creator-feed")
+
+for row in feed.pull_and_iterate():
+    store(row)          # persist durably — see below
+```
+
+`pull_and_iterate()` pulls a batch, pages every row, and acks. **The ack is what charges you**,
+and it runs only after the last row has been yielded, so:
+
+- persist each row durably before the generator ends;
+- if you break out of the loop, or an exception escapes it, **nothing is acked and nothing is
+  charged** — the batch stays open and a later pull re-serves it byte-identically;
+- if your process is down longer than `config.ack_ttl_hours` (48 by default) the batch expires,
+  the rows go back to the pool, and they are re-offered on a later pull. Losing an unacked batch
+  costs data latency, not money.
+
+The steps are available on their own if you want to drive them yourself:
+
+```python
+pull = feed.pull()
+if pull["status"] in ("ok", "open_batch_exists"):
+    batch = feed.batch(pull["batch"]["batch_id"])
+    rows = list(batch.iterate_rows())
+    result = batch.ack()
+    result["batch"]["billed_rows"]     # bill from this, never from row_count
+    result["constraints"]              # why fewer rows were billed, when they were
+```
+
+The other pull statuses — `unavailable`, `quota_exhausted`, `nothing_available` — are data, not
+errors: they simply carry no batch.
+
+### Buying everything new as a file
+
+```python
+receipt = feed.download()                       # quotes, then buys. This moves money.
+export = feed.export(receipt["export_id"]).wait_for_ready()
+feed.export(receipt["export_id"]).download_to("creators.jsonl")
+```
+
+`download()` always sends an `Idempotency-Key` — the API rejects a request without one — and
+reuses that key for its single automatic `quote_stale` retry, so a retried purchase cannot buy
+twice. The generated key dies with your process, so **pass your own key if the purchase must
+survive a restart**:
+
+```python
+feed.download(idempotency_key="nightly-2026-09-06")   # one key per purchase, reused on retry
+```
+
+`feed.quote()` tells you what it would cost, for free. `expected_items` is a ceiling, not an
+equality: a claim larger than it is refused, a smaller one proceeds and says `fewer_than_quoted`
+in `constraints`.
+
+A built export lives 4 days. Treat `expires_at` as authoritative rather than `status` — nothing
+marks an aged export expired, so a stale `ready` one signs a dead link. `retry()` rebuilds a
+failed or expired export for free; a plain re-`download()` would be a new purchase.
+
+### Money is strings
+
+`price_per_1000`, `amount`, `balance`, `billed_amount` and `price_per_1000_at_open` come back as
+quantized decimal strings and are returned **verbatim**. Do not `float()` them: you reconcile
+them against the credit ledger, and a float round-trip is how a sub-cent charge stops matching.
+(This is deliberately the opposite call from `usageTotalUsd`, which is a float.)
+
+### Your owned index
+
+A pool-backed dataset only delivers creators you do not already have, which it works out from an
+index you upload.
+
+```python
+feed.upload_owned_index("index_handles.txt")     # presigned PUT, then queues the load
+feed.get()["owned_index"]["latest_load"]         # the only place the outcome shows up
+```
+
+A refused load **replaces the live index anyway** — `index_missing`, `index_too_small`,
+`index_skip_rate` and `index_shrunk` all mean the same thing: re-upload.
+
+### Pace
+
+```python
+feed.update_config(daily_quota=2500, batch_size=1000)
+```
+
+Only those two are writable. `band`, `ack_ttl_hours` and `is_active` are read-only and the server
+drops them silently, so passing one raises `ValidationError` here rather than answering 200
+having changed nothing.
+
+`feed.get()` returns the overview — config, pool depth, quota, open batch, quote. It is **not a
+free status poll**: the server settles a batch that is due on the way past, which can move money.
+
 ## Webhook Handling
 
 ### Verifying Webhook Signatures
@@ -359,6 +465,35 @@ except GoFetchError as e:
 if run["status"] != "SUCCEEDED":
     print("Job did not succeed:", run["_gofetch_job"].get("error_message"))
 ```
+
+### Dataset errors
+
+Three `APIError` subclasses carry the structured data the datasets API sends with a refusal, so
+`except APIError` still catches all of them.
+
+```python
+from gofetch import BatchExpiredError, DatasetConflictError, InsufficientCreditsError
+
+try:
+    receipt = feed.download()
+
+except InsufficientCreditsError as e:          # 402 — nothing was billed
+    print(e.constraints)                       # [{"code": "insufficient_credits", "message": …}]
+
+except DatasetConflictError as e:              # 409
+    if e.code == "dataset_paused":
+        ...                                    # un-pause, then retry under the same key
+    elif e.code == "download_in_progress":
+        ...                                    # do NOT retry: the purchase may have landed
+
+except BatchExpiredError:                      # 410 on rows() — nothing was billed
+    ...                                        # pull again
+```
+
+`e.code` is the API's `errors.code`, and is `None` on the 409s that do not send one — branch on
+the status first and treat the code as enrichment. `e.quote` carries the fresh quote on
+`quote_stale` only. `e.details` carries `constraints`, `quote` and `supported_formats` when the
+response had them.
 
 ## Development
 
