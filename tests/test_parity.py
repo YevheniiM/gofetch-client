@@ -19,6 +19,10 @@ SYNC_ASYNC_PAIRS = [
     ("gofetch.webhook_client", "WebhookClient", "AsyncWebhookClient"),
     ("gofetch.webhook_client", "WebhookCollectionClient", "AsyncWebhookCollectionClient"),
     ("gofetch.log", "LogClient", "AsyncLogClient"),
+    ("gofetch.datasets", "DatasetCollectionClient", "AsyncDatasetCollectionClient"),
+    ("gofetch.datasets", "DatasetFeedClient", "AsyncDatasetFeedClient"),
+    ("gofetch.dataset_batch", "DatasetBatchClient", "AsyncDatasetBatchClient"),
+    ("gofetch.dataset_export", "DatasetExportClient", "AsyncDatasetExportClient"),
 ]
 
 

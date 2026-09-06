@@ -118,6 +118,13 @@ async def aiter_rows(
             return
 
 
+def _download_body(expected_items: int, format: str | None) -> dict[str, Any]:
+    body: dict[str, Any] = {"expected_items": expected_items}
+    if format is not None:
+        body["format"] = format
+    return body
+
+
 def _fresh_expected_items(error: DatasetConflictError) -> int:
     """The ceiling to retry a ``quote_stale`` refusal with."""
     quote = error.quote or {}
@@ -323,17 +330,19 @@ class DatasetFeedClient:
 
         path = f"{self._path}download/"
         headers = {IDEMPOTENCY_KEY_HEADER: key}
-        body: dict[str, Any] = {"expected_items": expected_items}
-        if format is not None:
-            body["format"] = format
 
         try:
-            return self._http.post(path, json=body, headers=headers)
+            return self._http.post(
+                path, json=_download_body(expected_items, format), headers=headers
+            )
         except DatasetConflictError as e:
             if e.code != "quote_stale":
                 raise
-            body["expected_items"] = _fresh_expected_items(e)
-            return self._http.post(path, json=body, headers=headers)
+            return self._http.post(
+                path,
+                json=_download_body(_fresh_expected_items(e), format),
+                headers=headers,
+            )
 
     def exports(self, *, limit: int = 25, offset: int = 0) -> ListPage:
         """One page of this dataset's exports, **without** ``url``.
@@ -566,17 +575,19 @@ class AsyncDatasetFeedClient:
 
         path = f"{self._path}download/"
         headers = {IDEMPOTENCY_KEY_HEADER: key}
-        body: dict[str, Any] = {"expected_items": expected_items}
-        if format is not None:
-            body["format"] = format
 
         try:
-            return await self._http.post(path, json=body, headers=headers)
+            return await self._http.post(
+                path, json=_download_body(expected_items, format), headers=headers
+            )
         except DatasetConflictError as e:
             if e.code != "quote_stale":
                 raise
-            body["expected_items"] = _fresh_expected_items(e)
-            return await self._http.post(path, json=body, headers=headers)
+            return await self._http.post(
+                path,
+                json=_download_body(_fresh_expected_items(e), format),
+                headers=headers,
+            )
 
     async def exports(self, *, limit: int = 25, offset: int = 0) -> ListPage:
         """One page of this dataset's exports, **without** ``url``.

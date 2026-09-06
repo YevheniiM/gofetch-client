@@ -2,12 +2,33 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from gofetch.exceptions import APIError, AuthenticationError, RateLimitError
+from gofetch.exceptions import (
+    APIError,
+    AuthenticationError,
+    BatchExpiredError,
+    DatasetConflictError,
+    GoFetchError,
+    InsufficientCreditsError,
+    RateLimitError,
+)
 from gofetch.http import HTTPClient, _handle_error_response
+
+
+def _response(status_code, body=None, *, text=None, headers=None):
+    """A MagicMock shaped like the httpx.Response the parser reads."""
+    response = MagicMock()
+    response.status_code = status_code
+    response.headers = headers or {}
+    if body is None:
+        response.json.side_effect = ValueError("Bad JSON")
+        response.text = text
+    else:
+        response.json.return_value = body
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +155,222 @@ class TestHandleErrorResponse:
             _handle_error_response(response)
 
         assert exc_info.value.details == {"field": "config.urls", "reason": "required"}
+
+
+# ---------------------------------------------------------------------------
+# Datasets error bodies (real payloads from dev, 2026-09-06)
+# ---------------------------------------------------------------------------
+
+
+class TestDatasetErrorBodies:
+    """The datasets API answers with `detail` and `errors.code`, never `message`."""
+
+    def test_detail_is_read_as_the_message(self) -> None:
+        """A body carrying only `detail` used to render as 'Unknown error'."""
+        response = _response(401, {"detail": "Invalid or expired API key"})
+
+        with pytest.raises(AuthenticationError) as exc_info:
+            _handle_error_response(response)
+
+        assert exc_info.value.message == "Invalid or expired API key"
+
+    def test_error_code_comes_from_errors_code(self) -> None:
+        response = _response(
+            400,
+            {
+                "detail": "Idempotency-Key is required: send a header unique to this download.",
+                "errors": {"code": "idempotency_key_required"},
+                "quote": {"items": {"new": 0}, "amount": "0.0000"},
+            },
+        )
+
+        with pytest.raises(APIError) as exc_info:
+            _handle_error_response(response)
+
+        assert exc_info.value.error_code == "idempotency_key_required"
+        assert exc_info.value.details["quote"]["amount"] == "0.0000"
+
+    def test_field_errors_are_not_mistaken_for_a_code(self) -> None:
+        """`errors` also holds {field: [messages]}; only a string `code` counts."""
+        response = _response(
+            400,
+            {
+                "detail": "limit must be a positive integer, got 0.",
+                "message": "limit must be a positive integer, got 0.",
+                "errors": {"limit": "limit must be a positive integer, got 0."},
+            },
+        )
+
+        with pytest.raises(APIError) as exc_info:
+            _handle_error_response(response)
+
+        assert exc_info.value.error_code is None
+        assert "positive integer" in exc_info.value.message
+
+    def test_list_body_does_not_crash(self) -> None:
+        """`raise ValidationError('<string>')` renders as a bare JSON list.
+
+        Reading keys off it raised AttributeError, which escaped every
+        `except GoFetchError` a caller wrote.
+        """
+        response = _response(400, ["Could not open a batch; retry the pull."])
+
+        with pytest.raises(GoFetchError) as exc_info:
+            _handle_error_response(response)
+
+        assert exc_info.value.message == "Could not open a batch; retry the pull."
+
+    def test_html_body_is_truncated(self) -> None:
+        """A non-uuid export id never reaches the app and 404s as an HTML page."""
+        response = _response(404, None, text="<!doctype html>" + "x" * 5000)
+
+        with pytest.raises(APIError) as exc_info:
+            _handle_error_response(response)
+
+        assert len(exc_info.value.message) <= 210
+        assert exc_info.value.message.endswith("...")
+
+    def test_402_raises_insufficient_credits_with_constraints(self) -> None:
+        response = _response(
+            402,
+            {
+                "detail": "This download costs $15.0000 and your balance is $2.0000.",
+                "constraints": [
+                    {
+                        "code": "insufficient_credits",
+                        "message": "This download costs $15.0000 and your balance is $2.0000.",
+                    }
+                ],
+            },
+        )
+
+        with pytest.raises(InsufficientCreditsError) as exc_info:
+            _handle_error_response(response)
+
+        assert exc_info.value.status_code == 402
+        assert exc_info.value.constraints[0]["code"] == "insufficient_credits"
+
+    def test_409_raises_dataset_conflict_with_quote(self) -> None:
+        response = _response(
+            409,
+            {
+                "detail": "The number of new items changed since you were quoted.",
+                "errors": {"code": "quote_stale"},
+                "quote": {"items": {"new": 940, "owned": 0, "total": 940}},
+            },
+        )
+
+        with pytest.raises(DatasetConflictError) as exc_info:
+            _handle_error_response(response)
+
+        assert exc_info.value.code == "quote_stale"
+        assert exc_info.value.quote["items"]["new"] == 940
+
+    def test_409_download_in_progress_carries_no_quote(self) -> None:
+        response = _response(
+            409,
+            {
+                "detail": "A download for this key is already running.",
+                "errors": {"code": "download_in_progress"},
+            },
+        )
+
+        with pytest.raises(DatasetConflictError) as exc_info:
+            _handle_error_response(response)
+
+        assert exc_info.value.code == "download_in_progress"
+        assert exc_info.value.quote is None
+
+    def test_409_without_a_code_is_still_a_dataset_conflict(self) -> None:
+        """Several 409s carry no `errors.code`; the status decides the class."""
+        response = _response(409, {"detail": "Batch api-x expired at ... ."})
+
+        with pytest.raises(DatasetConflictError) as exc_info:
+            _handle_error_response(response)
+
+        assert exc_info.value.code is None
+
+    def test_410_raises_batch_expired(self) -> None:
+        response = _response(
+            410,
+            {
+                "detail": "Batch api-x-20260906-1 expired at 2026-09-06T00:00:00Z without "
+                "being acked; its rows were released back to the pool.",
+            },
+        )
+
+        with pytest.raises(BatchExpiredError) as exc_info:
+            _handle_error_response(response)
+
+        assert exc_info.value.status_code == 410
+        assert "released back to the pool" in exc_info.value.message
+
+    def test_409_is_not_retryable(self) -> None:
+        """409 must stay out of the retry set: it is the answer that says stop."""
+        from gofetch.constants import RETRYABLE_STATUS_CODES
+
+        assert 409 not in RETRYABLE_STATUS_CODES
+        assert 410 not in RETRYABLE_STATUS_CODES
+        assert 402 not in RETRYABLE_STATUS_CODES
+
+    def test_supported_formats_rides_along(self) -> None:
+        response = _response(
+            400,
+            {
+                "detail": "Unsupported format 'xml' for this dataset.",
+                "errors": {"code": "unsupported_format"},
+                "supported_formats": ["jsonl"],
+            },
+        )
+
+        with pytest.raises(APIError) as exc_info:
+            _handle_error_response(response)
+
+        assert exc_info.value.details["supported_formats"] == ["jsonl"]
+
+
+# ---------------------------------------------------------------------------
+# headers= passthrough
+# ---------------------------------------------------------------------------
+
+
+class TestHeadersPassthrough:
+    """Every verb forwards `headers` to httpx — that is how Idempotency-Key ships."""
+
+    @pytest.mark.parametrize(
+        "method,kwargs",
+        [
+            ("get", {}),
+            ("post", {"json": {"expected_items": 5}}),
+            ("patch", {"json": {"daily_quota": 10}}),
+            ("delete", {}),
+        ],
+    )
+    def test_verb_forwards_headers(self, method, kwargs) -> None:
+        client = HTTPClient(api_key="test", base_url="http://localhost")
+        client._client = MagicMock()
+        client._client.request.return_value = MagicMock(status_code=200, **{"json.return_value": {}})
+
+        getattr(client, method)("/api/v1/x/", headers={"Idempotency-Key": "k-1"}, **kwargs)
+
+        assert client._client.request.call_args[1]["headers"] == {"Idempotency-Key": "k-1"}
+
+    def test_every_retry_resends_the_same_headers(self) -> None:
+        """The retry loop reuses the request, so a key covers its own retries."""
+        client = HTTPClient(api_key="test", base_url="http://localhost", max_retries=1)
+        client._client = MagicMock()
+        failure = MagicMock(status_code=500, headers={})
+        failure.json.return_value = {"detail": "boom"}
+        success = MagicMock(status_code=202)
+        success.json.return_value = {"export_id": "e-1"}
+        client._client.request.side_effect = [failure, success]
+
+        with patch("gofetch.http.time.sleep"):
+            client.post("/api/v1/x/", json={}, headers={"Idempotency-Key": "k-1"})
+
+        assert client._client.request.call_count == 2
+        for call in client._client.request.call_args_list:
+            assert call[1]["headers"] == {"Idempotency-Key": "k-1"}
 
 
 # ---------------------------------------------------------------------------
