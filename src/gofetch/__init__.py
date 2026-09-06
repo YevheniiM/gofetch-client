@@ -26,10 +26,21 @@ Usage:
 from gofetch.actor import ActorClient, AsyncActorClient
 from gofetch.client import AsyncGoFetchClient, GoFetchClient
 from gofetch.dataset import AsyncDatasetClient, DatasetClient
+from gofetch.dataset_batch import AsyncDatasetBatchClient, DatasetBatchClient
+from gofetch.dataset_export import AsyncDatasetExportClient, DatasetExportClient
+from gofetch.datasets import (
+    AsyncDatasetCollectionClient,
+    AsyncDatasetFeedClient,
+    DatasetCollectionClient,
+    DatasetFeedClient,
+)
 from gofetch.exceptions import (
     APIError,
     AuthenticationError,
+    BatchExpiredError,
+    DatasetConflictError,
     GoFetchError,
+    InsufficientCreditsError,
     JobError,
     RateLimitError,
     TimeoutError,
@@ -38,8 +49,13 @@ from gofetch.exceptions import (
 from gofetch.log import AsyncLogClient, LogClient
 from gofetch.run import AsyncRunClient, RunClient
 from gofetch.types import (
+    BatchState,
+    DatasetKind,
+    ExportStatus,
     JobStatus,
     ListPage,
+    PullStatus,
+    QuoteKind,
     RunStatus,
     ScraperType,
 )
@@ -59,27 +75,43 @@ from gofetch.webhook_client import (
 # Apify compatibility alias
 ApifyClient = GoFetchClient
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 __all__ = [
     "APIError",
     "ActorClient",
     "ApifyClient",
     "AsyncActorClient",
+    "AsyncDatasetBatchClient",
     "AsyncDatasetClient",
+    "AsyncDatasetCollectionClient",
+    "AsyncDatasetExportClient",
+    "AsyncDatasetFeedClient",
     "AsyncGoFetchClient",
     "AsyncLogClient",
     "AsyncRunClient",
     "AsyncWebhookClient",
     "AsyncWebhookCollectionClient",
     "AuthenticationError",
+    "BatchExpiredError",
+    "BatchState",
+    "DatasetBatchClient",
     "DatasetClient",
+    "DatasetCollectionClient",
+    "DatasetConflictError",
+    "DatasetExportClient",
+    "DatasetFeedClient",
+    "DatasetKind",
+    "ExportStatus",
     "GoFetchClient",
     "GoFetchError",
+    "InsufficientCreditsError",
     "JobError",
     "JobStatus",
     "ListPage",
     "LogClient",
+    "PullStatus",
+    "QuoteKind",
     "RateLimitError",
     "RunClient",
     "RunStatus",
