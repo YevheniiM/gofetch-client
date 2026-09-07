@@ -60,8 +60,49 @@ def _balance(client: GoFetchClient) -> Decimal:
     return Decimal(_feed(client).quote()["balance"])
 
 
+# httpx logs the full URL of every request it makes, and two of them here are
+# presigned S3 links. Redacting only our own payloads would leave the credential
+# in the run log anyway, so the filter sits on httpx's logger.
+_SIGNED = ("AWSAccessKeyId", "X-Amz-Signature", "X-Amz-Credential", "x-amz-security-token")
+
+
+class _StripSignedQuery(logging.Filter):
+    """httpx passes an ``httpx.URL``, not a ``str`` — match on ``str(arg)``."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.args:
+            record.args = tuple(_strip(a) for a in record.args)
+        return True
+
+
+def _strip(arg: object) -> object:
+    text = str(arg)
+    if not any(s in text for s in _SIGNED):
+        return arg
+    return text.split("?")[0] + "?<presigned>"
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _redact_httpx_urls():
+    log_filter = _StripSignedQuery()
+    logging.getLogger("httpx").addFilter(log_filter)
+    yield
+    logging.getLogger("httpx").removeFilter(log_filter)
+
+
+def _redacted(payload: Any) -> Any:
+    """Payloads minus the presigned URL.
+
+    A presigned link carries an access key id, a signature and a session token.
+    It is short-lived, but a run log is not, so it never goes to the logger.
+    """
+    if isinstance(payload, dict) and payload.get("url"):
+        return {**payload, "url": "<presigned>"}
+    return payload
+
+
 def _log(label: str, payload: Any) -> None:
-    logger.info("%s: %s", label, payload)
+    logger.info("%s: %s", label, _redacted(payload))
 
 
 def _need(key: str) -> Any:
@@ -374,8 +415,7 @@ def test_batches_and_exports_list(client: GoFetchClient) -> None:
 
 def test_owned_index_upload_url_is_a_presigned_put(client: GoFetchClient) -> None:
     upload = _feed(client).owned_index_upload_url(filename="index_handles.txt")
-    _log("owned_index_upload_url()",
-         {k: v for k, v in upload.items() if k != "url"} | {"url": "<presigned>"})
+    _log("owned_index_upload_url()", upload)
     assert upload["method"] == "PUT"
     assert upload["key"].endswith("index_handles.txt")
     assert upload["url"].startswith("https://")

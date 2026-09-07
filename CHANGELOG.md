@@ -57,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   envelope, not a bare batch, so the receipt is at `result["batch"]["billed_rows"]`.
 - `DatasetConflictError` now documents `pool_empty` and `quota_exhausted` as come-back-later
   refusals rather than leaving them unlisted.
+- `download_to()` never said the file it writes is **gzipped**. The server stores every export
+  as `<id>.<format>.gz` with `Content-Type: application/gzip` and no `Content-Encoding`, so
+  nothing inflates it in transit — a caller following the README's `download_to("creators.jsonl")`
+  got binary. The bytes are still written verbatim (that is what makes them match `byte_size`);
+  the docs and the example now name the encoding and show `gzip.open`.
 
 ### Tests
 

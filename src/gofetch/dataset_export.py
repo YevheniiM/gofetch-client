@@ -128,7 +128,15 @@ class DatasetExportClient:
         return self._http.post(f"{self._path}retry/")
 
     def download_to(self, path: str) -> str:
-        """Stream the built file to ``path``. Returns ``path``.
+        """Stream the built file to ``path``, **gzipped**. Returns ``path``.
+
+        The server stores every export as ``<id>.<format>.gz`` with
+        ``Content-Type: application/gzip`` and no ``Content-Encoding``, so
+        nothing decompresses it in transit and the bytes written here are gzip.
+        Name the file ``.jsonl.gz`` and read it with ``gzip.open``; a caller who
+        names it ``.jsonl`` and opens it as text gets binary. The bytes are
+        written verbatim rather than inflated, so ``byte_size`` on the export
+        row matches what lands on disk.
 
         Raises:
             TimeoutError: The export is not ``ready``, or its link has gone —
@@ -213,7 +221,15 @@ class AsyncDatasetExportClient:
         return await self._http.post(f"{self._path}retry/")
 
     async def download_to(self, path: str) -> str:
-        """Stream the built file to ``path``. Returns ``path``.
+        """Stream the built file to ``path``, **gzipped**. Returns ``path``.
+
+        The server stores every export as ``<id>.<format>.gz`` with
+        ``Content-Type: application/gzip`` and no ``Content-Encoding``, so
+        nothing decompresses it in transit and the bytes written here are gzip.
+        Name the file ``.jsonl.gz`` and read it with ``gzip.open``; a caller who
+        names it ``.jsonl`` and opens it as text gets binary. The bytes are
+        written verbatim rather than inflated, so ``byte_size`` on the export
+        row matches what lands on disk.
 
         Raises:
             TimeoutError: The export is not ``ready``, or its link has gone —

@@ -359,8 +359,14 @@ errors: they simply carry no batch.
 receipt = feed.download()                       # quotes, then buys. This moves money.
                                                 # for a recoverable purchase see below
 export = feed.export(receipt["export_id"]).wait_for_ready()
-feed.export(receipt["export_id"]).download_to("creators.jsonl")
+feed.export(receipt["export_id"]).download_to("creators.jsonl.gz")
+
+with gzip.open("creators.jsonl.gz", "rt") as fh:        # the file IS gzipped
+    creators = [json.loads(line) for line in fh]
 ```
+
+`download_to()` writes the bytes verbatim and they are gzip — the server stores every
+export as `<id>.<format>.gz` and sends no `Content-Encoding`, so nothing inflates it for you.
 
 **One call is one batch, not the whole pool.** The server sizes the purchase as
 `min(config.batch_size, daily quota left, rows available)` and reports it as

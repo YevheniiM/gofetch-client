@@ -825,6 +825,27 @@ class TestDatasetExportClient:
             f"/api/v1/datasets/creator-feed/exports/{EXPORT_ID}/retry/"
         )
 
+    def test_download_to_writes_the_gzip_bytes_verbatim(self, tmp_path):
+        """Measured on dev 2026-09-07: the object is `<id>.jsonl.gz` served as
+        application/gzip with NO Content-Encoding, so nothing inflates it in
+        transit. Inflating it here would break `byte_size` and surprise a caller
+        who asked for the file the server built."""
+        import gzip
+
+        body = gzip.compress(b'{"tiktok_handle": "beautyvibe35"}\n')
+        http = MagicMock()
+        http.get.return_value = MOCK_EXPORT_READY
+        target = tmp_path / "export.jsonl.gz"
+
+        with patch("gofetch.dataset_export.httpx.Client") as client_cls:
+            response = client_cls.return_value.__enter__.return_value.stream
+            response.return_value.__enter__.return_value.status_code = 200
+            response.return_value.__enter__.return_value.iter_bytes.return_value = [body]
+            DatasetExportClient(http, "creator-feed", EXPORT_ID).download_to(str(target))
+
+        assert target.read_bytes() == body
+        assert target.read_bytes()[:2] == b"\x1f\x8b"
+
     def test_download_to_streams_without_the_api_key(self, tmp_path):
         """The presigned GET is signed bare — X-API-Key would break it."""
         http = MagicMock()
