@@ -655,6 +655,27 @@ class TestDownload:
         assert result["billed_amount"] == "0.0000"
         assert result["export_id"]
 
+    def test_a_drained_pool_refuses_rather_than_billing_a_free_zero(self):
+        """Measured on dev 2026-09-07: a POOL dataset with nothing left answers
+        409 pool_empty, NOT the upload path's zero-item receipt. A drain loop
+        driven off a zero receipt would never terminate."""
+        http = MagicMock()
+        http.get.return_value = {**MOCK_QUOTE, "items": {"new": 0, "owned": 100,
+                                                         "total": 100}}
+        http.post.side_effect = DatasetConflictError(
+            message="No rows are available right now: everything is already "
+                    "delivered, held by another batch, or in your own index.",
+            error_code="pool_empty",
+            quote={"items": {"new": 0, "owned": 100, "total": 100},
+                   "amount": "0.0000", "balance": "4688.8125"})
+
+        with pytest.raises(DatasetConflictError) as exc_info:
+            DatasetFeedClient(http, "creator-feed").download()
+
+        assert exc_info.value.code == "pool_empty"
+        # A come-back-later refusal carries the quote; nothing was billed.
+        assert exc_info.value.quote["items"]["new"] == 0
+
     def test_quote_stale_without_a_quote_is_re_raised_not_retried_blind(self):
         """`quote` is absent on download_in_progress, idempotency_key_reused,
         unsupported_format and ledger_conflict — never assume it is there."""
@@ -1078,3 +1099,113 @@ class TestPresignedTransfers:
 
         assert target.read_bytes() == b'{"a": 1}\n{"b": 2}\n'
         client.stream.assert_called_once_with("GET", "https://s3.example.com/get")
+
+
+# ---------------------------------------------------------------------------
+# Batch ownership — a batch belongs to the API key that opened it
+# ---------------------------------------------------------------------------
+
+# Copied from the shipped refusal copy, not paraphrased.
+BATCH_NOT_YOURS = {
+    "detail": "Batch api-x-20260907-1: This batch belongs to a different API key on "
+              "your organization. Its rows and its ack belong to the client that "
+              "pulled it.",
+    "errors": {"code": "batch_not_yours"},
+}
+
+PULL_OPEN_BATCH_NOT_YOURS = {
+    "status": "unavailable",
+    "batch": None,
+    "constraints": [{
+        "code": "open_batch_not_yours",
+        "message": "Another API key on your organization holds this dataset's open "
+                   "batch. One batch is open at a time — pull again once that client "
+                   "acks it.",
+    }],
+}
+
+
+def _forbidden(payload=BATCH_NOT_YOURS):
+    """The exception `_handle_error_response` builds for a 403 carrying a code."""
+    return APIError(message=payload["detail"], status_code=403,
+                    error_code=payload["errors"]["code"])
+
+
+class TestBatchOwnership:
+    """A second key on the same org must be refused, not quietly served.
+
+    The org is never crossed here — both keys belong to it — so the failure this
+    guards is a misrouted paid delivery, not a tenancy leak. The SDK's job is to
+    surface the refusal as a typed, terminal error and never retry it.
+    """
+
+    @pytest.mark.parametrize("call", [
+        lambda c: c.rows(),
+        lambda c: list(c.iterate_rows()),
+        lambda c: c.ack(),
+        lambda c: c.export(),
+    ])
+    def test_a_foreign_batch_is_a_403_naming_the_code(self, call):
+        http = MagicMock()
+        http.get.side_effect = _forbidden()
+        http.post.side_effect = _forbidden()
+
+        with pytest.raises(APIError) as exc_info:
+            call(DatasetBatchClient(http, "creator-feed", "api-x-20260907-1"))
+
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.error_code == "batch_not_yours"
+
+    def test_batch_not_yours_is_never_retried(self):
+        """403 is outside the retry set, so a misroute cannot be papered over."""
+        from gofetch.constants import RETRYABLE_STATUS_CODES
+
+        assert 403 not in RETRYABLE_STATUS_CODES
+
+    def test_get_on_a_foreign_batch_raises_rather_than_returning_none(self):
+        """Only a 404 means "no such batch". A 403 means it exists and is not yours."""
+        http = MagicMock()
+        http.get.side_effect = _forbidden()
+
+        with pytest.raises(APIError) as exc_info:
+            DatasetBatchClient(http, "creator-feed", "api-x-20260907-1").get()
+
+        assert exc_info.value.error_code == "batch_not_yours"
+
+    def test_a_pull_blocked_by_another_key_is_data_not_an_error(self):
+        http = MagicMock()
+        http.post.return_value = PULL_OPEN_BATCH_NOT_YOURS
+
+        response = DatasetFeedClient(http, "creator-feed").pull()
+
+        assert response["status"] == "unavailable"
+        assert response["batch"] is None
+        assert [c["code"] for c in response["constraints"]] == ["open_batch_not_yours"]
+
+    def test_pull_and_iterate_yields_nothing_when_another_key_holds_the_batch(self):
+        http = MagicMock()
+        http.post.return_value = PULL_OPEN_BATCH_NOT_YOURS
+
+        rows = list(DatasetFeedClient(http, "creator-feed").pull_and_iterate())
+
+        assert rows == []
+        http.get.assert_not_called()
+
+    def test_a_download_blocked_by_a_foreign_batch_is_the_existing_409(self):
+        http = MagicMock()
+        http.get.return_value = MOCK_QUOTE
+        http.post.side_effect = DatasetConflictError(
+            message="Ack the open batch before buying the rest.",
+            error_code="open_batch_blocks_download")
+
+        with pytest.raises(DatasetConflictError) as exc_info:
+            DatasetFeedClient(http, "creator-feed").download()
+
+        assert exc_info.value.code == "open_batch_blocks_download"
+
+    def test_a_foreign_export_is_a_404_and_reads_as_absent(self):
+        """The export list is scoped too, so a foreign export simply is not there."""
+        http = MagicMock()
+        http.get.side_effect = APIError(message="No export", status_code=404)
+
+        assert DatasetExportClient(http, "creator-feed", "e-1").get() is None

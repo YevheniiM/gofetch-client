@@ -139,6 +139,7 @@ markers = [
     "webhook: tests requiring ngrok webhook tunnel",
     "slow: long-running tests (tier >= 500)",
     "batch: batch multi-URL tests (25 URLs per call, expensive)",
+    "datasets: Datasets product E2E (pull/ack/export/download — moves credits)",
 ]
 
 [tool.coverage.run]

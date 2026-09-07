@@ -312,6 +312,26 @@ class TestDatasetErrorBodies:
         assert 409 not in RETRYABLE_STATUS_CODES
         assert 410 not in RETRYABLE_STATUS_CODES
         assert 402 not in RETRYABLE_STATUS_CODES
+        # A batch that belongs to another API key on the same org. Retrying it
+        # would re-ask a question already answered no.
+        assert 403 not in RETRYABLE_STATUS_CODES
+
+    def test_403_batch_not_yours_carries_its_code(self) -> None:
+        response = _response(
+            403,
+            {
+                "detail": "Batch api-x-20260907-1: This batch belongs to a different "
+                "API key on your organization. Its rows and its ack belong to the "
+                "client that pulled it.",
+                "errors": {"code": "batch_not_yours"},
+            },
+        )
+
+        with pytest.raises(APIError) as exc_info:
+            _handle_error_response(response)
+
+        assert exc_info.value.status_code == 403
+        assert exc_info.value.error_code == "batch_not_yours"
 
     def test_supported_formats_rides_along(self) -> None:
         response = _response(
