@@ -13,6 +13,17 @@
 
 Python SDK for GoFetch.io social media scraping API. Drop-in replacement for `apify-client`.
 
+The distribution and the import name differ, and getting it wrong looks like a failed
+release: install `gofetch-client`, import `gofetch`. There is no `gofetch` project on
+PyPI, so `pip install gofetch` fails outright.
+
+```bash
+pip install gofetch-client
+```
+```python
+import gofetch
+```
+
 ## Key Files
 
 | File | Purpose |
