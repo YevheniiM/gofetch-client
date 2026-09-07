@@ -20,8 +20,12 @@ re-running it against the same dataset needs the supply topped up first.
 
 from __future__ import annotations
 
+import gzip
+import hashlib
+import json
 import logging
 import os
+import pathlib
 import tempfile
 import uuid
 from decimal import Decimal
@@ -90,6 +94,12 @@ def _redact_httpx_urls():
     logging.getLogger("httpx").removeFilter(log_filter)
 
 
+def _digest(row: dict[str, Any]) -> str:
+    """A stable fingerprint of a row, so the log can prove identity without echoing it."""
+    return hashlib.sha256(
+        json.dumps(row, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
 def _redacted(payload: Any) -> Any:
     """Payloads minus the presigned URL.
 
@@ -103,6 +113,22 @@ def _redacted(payload: Any) -> Any:
 
 def _log(label: str, payload: Any) -> None:
     logger.info("%s: %s", label, _redacted(payload))
+
+
+def _read_back(client: GoFetchClient, export_id: str, item_count: int) -> None:
+    """Download an export and prove it parses. Bytes on disk prove nothing.
+
+    The server stores exports gzipped and sends no ``Content-Encoding``, so what
+    lands on disk is compressed — the SDK writes it verbatim on purpose.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        path = _feed(client).export(export_id).download_to(os.path.join(d, "e.jsonl.gz"))
+        raw = pathlib.Path(path).read_bytes()
+        assert raw[:2] == b"\x1f\x8b", "export should be gzip"
+        rows = [json.loads(line) for line in gzip.decompress(raw).splitlines() if line.strip()]
+    logger.info("export %s: %s bytes gzip -> %s JSONL rows, digests %s",
+                export_id, len(raw), len(rows), [_digest(r) for r in rows[:3]])
+    assert len(rows) == item_count, f"{len(rows)} rows in the file, {item_count} claimed"
 
 
 def _need(key: str) -> Any:
@@ -180,8 +206,10 @@ def test_rows_are_readable_and_paginate(client: GoFetchClient) -> None:
     batch_id = _need("batch_id")
     batch = _feed(client).batch(batch_id)
     page = batch.rows(limit=2)
+    # A row is a real creator's profile. The log records its SHAPE and a digest,
+    # never its contents — a run log is not the place to republish people.
     _log("batch.rows(limit=2)", {"total": page.total, "on_page": len(page),
-                                 "first": page.items[:1]})
+                                 "fields": sorted(page.items[0]), "digest": _digest(page.items[0])})
     assert page.total == STATE["batch"]["row_count"]
     rows = list(batch.iterate_rows())
     assert len(rows) == page.total
@@ -237,12 +265,7 @@ def test_batch_export_builds_a_file(client: GoFetchClient) -> None:
     assert ready and ready["status"] == "ready", f"export never became ready: {ready}"
     assert _balance(client) == before, "re-exporting what was bought must be free"
 
-    with tempfile.TemporaryDirectory() as d:
-        path = _feed(client).export(export["export_id"]).download_to(
-            os.path.join(d, "batch.jsonl"))
-        size = os.path.getsize(path)
-        logger.info("export file %s bytes", size)
-        assert size > 0
+    _read_back(client, export["export_id"], ready["item_count"])
     STATE["batch_export_id"] = export["export_id"]
 
 
@@ -381,11 +404,7 @@ def test_download_export_becomes_ready(client: GoFetchClient) -> None:
     export = _feed(client).export(receipt["export_id"]).wait_for_ready(wait_secs=300)
     _log("download export.wait_for_ready()", export)
     assert export and export["status"] == "ready"
-    with tempfile.TemporaryDirectory() as d:
-        path = _feed(client).export(receipt["export_id"]).download_to(
-            os.path.join(d, "download.jsonl"))
-        logger.info("download export file %s bytes", os.path.getsize(path))
-        assert os.path.getsize(path) > 0
+    _read_back(client, receipt["export_id"], export["item_count"])
 
 
 # ---------------------------------------------------------------------------
