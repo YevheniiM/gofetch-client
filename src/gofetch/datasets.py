@@ -357,16 +357,27 @@ class DatasetFeedClient:
         format: str | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        """Buy everything new as one file. **This moves money.**
+        """Buy what is on offer right now as one file. **This moves money.**
+
+        **One call is one batch, not the whole pool.** The server sizes the
+        purchase as ``min(config.batch_size, daily quota left, rows available)``
+        and reports it as ``quote()["items"]["new"]``, so a pool holding more
+        than ``batch_size`` new rows takes repeated calls — each with its OWN
+        idempotency key — to drain. Raise ``config.batch_size`` with
+        :meth:`update_config` to buy more per call.
 
         Quotes first, then claims at most ``expected_items`` rows — a ceiling,
         not an equality: a claim larger than it is refused with a fresh quote, a
         smaller one proceeds and says ``fewer_than_quoted`` in ``constraints``.
         Returns the 202 receipt: ``export_id``, ``status``, ``billed_items`` and
         ``billed_amount`` (a decimal string — do not float it). Poll the export
-        with ``feed.export(export_id).wait_for_ready()``. ``billed_items`` is
-        ``0`` and ``billed_amount`` ``"0.0000"`` when there was nothing new to
-        buy — a successful free download, not a failure.
+        with ``feed.export(export_id).wait_for_ready()``. ``billed_items`` can be
+        smaller than the ceiling — ``constraints`` says which limit bound it —
+        but a download with nothing left to buy is REFUSED, not answered with a
+        free receipt: a drained pool is ``409 pool_empty`` and an exhausted
+        daily quota ``409 quota_exhausted``, both carrying the fresh ``quote``.
+        Neither bills anything; both mean come back later, so drive a drain loop
+        off ``quote()["items"]["new"]`` rather than off a zero receipt.
 
         Args:
             expected_items: The ceiling. Defaults to ``quote()["items"]["new"]``.
@@ -644,16 +655,27 @@ class AsyncDatasetFeedClient:
         format: str | None = None,
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
-        """Buy everything new as one file. **This moves money.**
+        """Buy what is on offer right now as one file. **This moves money.**
+
+        **One call is one batch, not the whole pool.** The server sizes the
+        purchase as ``min(config.batch_size, daily quota left, rows available)``
+        and reports it as ``quote()["items"]["new"]``, so a pool holding more
+        than ``batch_size`` new rows takes repeated calls — each with its OWN
+        idempotency key — to drain. Raise ``config.batch_size`` with
+        :meth:`update_config` to buy more per call.
 
         Quotes first, then claims at most ``expected_items`` rows — a ceiling,
         not an equality: a claim larger than it is refused with a fresh quote, a
         smaller one proceeds and says ``fewer_than_quoted`` in ``constraints``.
         Returns the 202 receipt: ``export_id``, ``status``, ``billed_items`` and
         ``billed_amount`` (a decimal string — do not float it). Poll the export
-        with ``feed.export(export_id).wait_for_ready()``. ``billed_items`` is
-        ``0`` and ``billed_amount`` ``"0.0000"`` when there was nothing new to
-        buy — a successful free download, not a failure.
+        with ``feed.export(export_id).wait_for_ready()``. ``billed_items`` can be
+        smaller than the ceiling — ``constraints`` says which limit bound it —
+        but a download with nothing left to buy is REFUSED, not answered with a
+        free receipt: a drained pool is ``409 pool_empty`` and an exhausted
+        daily quota ``409 quota_exhausted``, both carrying the fresh ``quote``.
+        Neither bills anything; both mean come back later, so drive a drain loop
+        off ``quote()["items"]["new"]`` rather than off a zero receipt.
 
         Args:
             expected_items: The ceiling. Defaults to ``quote()["items"]["new"]``.

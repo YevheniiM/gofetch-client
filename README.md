@@ -353,13 +353,23 @@ if pull["status"] in ("ok", "open_batch_exists"):
 The other pull statuses — `unavailable`, `quota_exhausted`, `nothing_available` — are data, not
 errors: they simply carry no batch.
 
-### Buying everything new as a file
+### Buying what is on offer as a file
 
 ```python
 receipt = feed.download()                       # quotes, then buys. This moves money.
                                                 # for a recoverable purchase see below
 export = feed.export(receipt["export_id"]).wait_for_ready()
 feed.export(receipt["export_id"]).download_to("creators.jsonl")
+```
+
+**One call is one batch, not the whole pool.** The server sizes the purchase as
+`min(config.batch_size, daily quota left, rows available)` and reports it as
+`quote()["items"]["new"]`, so draining a pool takes repeated calls — each with its own
+idempotency key. Raise `config.batch_size` to buy more per call.
+
+```python
+while feed.quote()["items"]["new"]:             # drive the loop off the quote
+    feed.download(idempotency_key=uuid.uuid4().hex)
 ```
 
 `download()` always sends an `Idempotency-Key` — the API rejects a request without one — and
@@ -411,8 +421,12 @@ other's receipts and hand back an export the other one bought.
 key was sent with a different `expected_items` or `format` than the purchase it belongs to;
 replay it with the original ceiling. It also fires while the first request is still in flight.
 
-`billed_items: 0` with `billed_amount: "0.0000"` is a **successful free download** — there was
-nothing new to buy. Do not read it as a failure.
+`billed_items` can come back smaller than the ceiling — `constraints` names the limit that bound
+it. But a download with **nothing left to buy is refused, not answered with a free receipt**: a
+drained pool is `409 pool_empty` and an exhausted daily quota `409 quota_exhausted`, both
+carrying the fresh `quote` and both billing nothing. Drive a drain loop off
+`quote()["items"]["new"]`, never off a zero receipt. (An *upload* dataset with nothing new does
+answer `billed_items: 0` at `"0.0000"` — a successful free download, not a failure.)
 
 `feed.quote()` tells you what it would cost, for free. `expected_items` is a ceiling, not an
 equality: a claim larger than it is refused, a smaller one proceeds and says `fewer_than_quoted`

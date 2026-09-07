@@ -153,6 +153,9 @@ class DatasetConflictError(APIError):
       idempotency key; a refusal releases the key, so nothing was billed.
       ``download()`` already does this for you.
     - ``ledger_conflict`` — retryable: pull again, the next one succeeds.
+    - ``pool_empty`` / ``quota_exhausted`` — nothing was billed and the request
+      was correct; there is simply nothing to sell right now. Retry later under
+      the same key, or read ``.quote`` for the current counts.
     - ``dataset_paused`` — an operator retired the dataset. Un-pause it and
       retry under the same key.
     - ``open_batch_blocks_download`` — ack the open pull batch first, then retry.

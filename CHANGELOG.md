@@ -47,6 +47,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `except GoFetchError` a caller had written.
 - A non-JSON error body (a Django HTML 404 page, reachable by passing a non-UUID export id)
   put the whole document into the exception message. It is now truncated.
+- Three docs claims the dev end-to-end run disproved. `download()` said it buys "everything
+  new"; the server sizes a purchase as `min(config.batch_size, daily quota left, rows
+  available)`, so one call buys one batch and draining a pool takes repeated calls. It also
+  said a purchase with nothing left to buy comes back as a free `billed_items: 0` receipt;
+  a **pool** dataset refuses it `409 pool_empty` (quota exhausted: `409 quota_exhausted`),
+  both carrying the quote and billing nothing — a drain loop driven off a zero receipt would
+  never terminate. And `batch.ack()` returns pull's `{"status", "batch", "constraints"}`
+  envelope, not a bare batch, so the receipt is at `result["batch"]["billed_rows"]`.
+- `DatasetConflictError` now documents `pool_empty` and `quota_exhausted` as come-back-later
+  refusals rather than leaving them unlisted.
+
+### Tests
+
+- `tests/e2e/test_datasets_e2e.py` (marker `datasets`) — the whole product against a real
+  environment: list, get, quote, pull, re-pull, rows, ack, ack replay, batch export,
+  `update_config`, download, download replay, `idempotency_key_reused`, `unsupported_format`,
+  drain to `pool_empty`, and the owned-index upload. Every step that can charge reads the org's
+  credit balance before and after and reconciles the delta against the receipt.
+- Unit coverage for batch ownership (`403 batch_not_yours` on rows, detail, ack and export;
+  the `open_batch_not_yours` pull constraint; `open_batch_blocks_download`; a foreign export
+  reading as absent) and for `403` staying out of the retryable set.
 
 ## [0.6.0] - 2026-08-29
 

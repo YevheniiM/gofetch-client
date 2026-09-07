@@ -62,6 +62,12 @@ class DatasetBatchClient:
     def ack(self) -> dict[str, Any]:
         """Settle the batch: the rows are ledgered and **charged** here.
 
+        Returns the same ``{"status", "batch", "constraints"}`` envelope
+        :meth:`DatasetFeedClient.pull` does, NOT a bare batch — the receipt is
+        at ``result["batch"]["billed_rows"]`` and
+        ``result["batch"]["billed_amount"]``, and ``constraints`` says why a
+        batch billed for fewer rows than it holds.
+
         Idempotent — acking an already-acked batch returns it and charges
         nothing. Persist the rows durably before calling this.
 
@@ -131,6 +137,12 @@ class AsyncDatasetBatchClient:
 
     async def ack(self) -> dict[str, Any]:
         """Settle the batch: the rows are ledgered and **charged** here.
+
+        Returns the same ``{"status", "batch", "constraints"}`` envelope
+        :meth:`DatasetFeedClient.pull` does, NOT a bare batch — the receipt is
+        at ``result["batch"]["billed_rows"]`` and
+        ``result["batch"]["billed_amount"]``, and ``constraints`` says why a
+        batch billed for fewer rows than it holds.
 
         Idempotent — acking an already-acked batch returns it and charges
         nothing. Persist the rows durably before calling this.
