@@ -7,6 +7,73 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-07
+
+### Added
+
+- **Datasets support** — the subscription-feed product (`/api/v1/datasets/`), separate from
+  `client.dataset(job_id)`, which still means one scraper job's results and is unchanged.
+  - `client.datasets()` -> `DatasetCollectionClient`: `list()`, `iterate()`, `feed(slug)`.
+  - `client.dataset_feed(slug)` -> `DatasetFeedClient`: `get()`, `update_config()`, `pull()`,
+    `batches()`, `iterate_batches()`, `batch(id)`, `pull_and_iterate()`, `quote()`,
+    `download()`, `exports()`, `iterate_exports()`, `export(id)`, `owned_index_upload_url()`,
+    `owned_index_load()`, `upload_owned_index(path)`.
+  - `DatasetBatchClient`: `get()`, `rows()`, `iterate_rows()`, `ack()`, `export()`.
+  - `DatasetExportClient`: `get()`, `wait_for_ready()`, `retry()`, `download_to(path)`.
+  - Async twins for all four.
+- `feed.pull_and_iterate()` runs the whole delivery loop: pull, page every row, ack. It acks
+  **only on clean exhaustion** — break out of the generator or let an exception escape it and
+  nothing is acked and nothing is charged, so a re-pull re-serves the same batch.
+- `feed.download()` always sends an `Idempotency-Key` (the API rejects a request without one)
+  and reuses that key for its single `quote_stale` retry, so a retried purchase cannot buy
+  twice. Pass your own key if the purchase must survive a process restart. Reuse the same key
+  after a network error, a timeout, any 5xx or `409 download_in_progress` — money may have
+  moved; a fresh key is safe after any 4xx refusal.
+- `InsufficientCreditsError` (402, with `.constraints`), `BatchExpiredError` (410) and
+  `DatasetConflictError` (409, with `.code` and `.quote`). All subclass `APIError`.
+- `PullStatus`, `BatchState`, `ExportStatus`, `DatasetKind`, `QuoteKind` enums, and
+  documentation models for the list row, overview, batch, quote, download receipt and export
+  row. Money fields are typed `str`: they are quantized decimals reconciled against the credit
+  ledger, and a float round-trip is how a sub-cent charge stops matching.
+
+### Fixed
+
+- Error messages. The parser read `message` then `error` and never `detail`, so every error
+  whose body uses `detail` — which is all of them on the datasets API, and the 401s on every
+  API — surfaced as `APIError: [401] Unknown error`. It now reads `detail`, `message`, `error`
+  in that order, and takes the machine-readable code from `errors.code`.
+- An error body that is a bare JSON list (DRF renders `ValidationError('<string>')` that way)
+  raised an uncaught `AttributeError` instead of an `APIError`, escaping every
+  `except GoFetchError` a caller had written.
+- A non-JSON error body (a Django HTML 404 page, reachable by passing a non-UUID export id)
+  put the whole document into the exception message. It is now truncated.
+- Three docs claims the dev end-to-end run disproved. `download()` said it buys "everything
+  new"; the server sizes a purchase as `min(config.batch_size, daily quota left, rows
+  available)`, so one call buys one batch and draining a pool takes repeated calls. It also
+  said a purchase with nothing left to buy comes back as a free `billed_items: 0` receipt;
+  a **pool** dataset refuses it `409 pool_empty` (quota exhausted: `409 quota_exhausted`),
+  both carrying the quote and billing nothing — a drain loop driven off a zero receipt would
+  never terminate. And `batch.ack()` returns pull's `{"status", "batch", "constraints"}`
+  envelope, not a bare batch, so the receipt is at `result["batch"]["billed_rows"]`.
+- `DatasetConflictError` now documents `pool_empty` and `quota_exhausted` as come-back-later
+  refusals rather than leaving them unlisted.
+- `download_to()` never said the file it writes is **gzipped**. The server stores every export
+  as `<id>.<format>.gz` with `Content-Type: application/gzip` and no `Content-Encoding`, so
+  nothing inflates it in transit — a caller following the README's `download_to("creators.jsonl")`
+  got binary. The bytes are still written verbatim (that is what makes them match `byte_size`);
+  the docs and the example now name the encoding and show `gzip.open`.
+
+### Tests
+
+- `tests/e2e/test_datasets_e2e.py` (marker `datasets`) — the whole product against a real
+  environment: list, get, quote, pull, re-pull, rows, ack, ack replay, batch export,
+  `update_config`, download, download replay, `idempotency_key_reused`, `unsupported_format`,
+  drain to `pool_empty`, and the owned-index upload. Every step that can charge reads the org's
+  credit balance before and after and reconciles the delta against the receipt.
+- Unit coverage for batch ownership (`403 batch_not_yours` on rows, detail, ack and export;
+  the `open_batch_not_yours` pull constraint; `open_batch_blocks_download`; a foreign export
+  reading as absent) and for `403` staying out of the retryable set.
+
 ## [0.6.0] - 2026-08-29
 
 ### Added

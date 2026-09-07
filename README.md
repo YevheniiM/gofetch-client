@@ -14,6 +14,7 @@ A drop-in replacement for `apify-client` that uses the GoFetch.io infrastructure
 - **13 scrapers**: Instagram (posts, profiles, comments), TikTok (videos, comments, identity resolve), YouTube, Facebook (posts, pages), Google SERP, cross-platform Profile Probe
 - **Sync and async** execution modes
 - **Webhook support** for asynchronous job notifications
+- **[Datasets](#datasets)**: pull/ack subscription feeds and paid downloads
 - **Full type hints** for better IDE support
 - **Automatic retries** with exponential backoff
 
@@ -293,6 +294,187 @@ len(page), page[0]         # plain list behaviour
 page.items, page.total     # apify-client's ListPage attributes (also offset, limit, desc)
 ```
 
+## Datasets
+
+A **dataset** here is the subscription product — a feed of rows you pull, read and ack, plus a
+paid one-shot download of everything new. It is **not** `client.dataset(job_id)`, which fetches
+one scraper job's results and is unchanged.
+
+| You want | Use |
+|---|---|
+| One scraper job's results | `client.dataset(job_id)` — the Apify-compatible client |
+| The Datasets product | `client.datasets()` and `client.dataset_feed(slug)` |
+
+There are no dataset webhooks. Polling is the only delivery mechanism.
+
+### The delivery loop
+
+```python
+feed = client.dataset_feed("creator-feed")
+
+for row in feed.pull_and_iterate():
+    store(row)          # persist durably — see below
+```
+
+`pull_and_iterate()` pulls a batch, pages every row, and acks. **The ack is what charges you**,
+and it runs only after the last row has been yielded, so:
+
+- persist each row durably before the generator ends;
+- if you break out of the loop, or an exception escapes it, **nothing is acked and nothing is
+  charged** — the batch stays open and a later pull re-serves it byte-identically;
+- if your process is down longer than `config.ack_ttl_hours` (48 by default) the batch expires,
+  the rows go back to the pool, and they are re-offered on a later pull. Losing an unacked batch
+  costs data latency, not money.
+
+If the dataset is **paused** mid-flight, `pull()` raises `409 dataset_paused` — the pause is
+checked before an open batch is re-served, so a batch you already hold goes invisible to `pull()`.
+It is still yours, and still ackable:
+
+```python
+open_batch = feed.get()["open_batch"]
+if open_batch:
+    batch = feed.batch(open_batch["batch_id"])
+    rows = list(batch.iterate_rows())
+    batch.ack()
+```
+
+The steps are available on their own if you want to drive them yourself:
+
+```python
+pull = feed.pull()
+if pull["status"] in ("ok", "open_batch_exists"):
+    batch = feed.batch(pull["batch"]["batch_id"])
+    rows = list(batch.iterate_rows())
+    result = batch.ack()
+    result["batch"]["billed_rows"]     # bill from this, never from row_count
+    result["constraints"]              # why fewer rows were billed, when they were
+```
+
+The other pull statuses — `unavailable`, `quota_exhausted`, `nothing_available` — are data, not
+errors: they simply carry no batch.
+
+### Buying what is on offer as a file
+
+```python
+receipt = feed.download()                       # quotes, then buys. This moves money.
+                                                # for a recoverable purchase see below
+export = feed.export(receipt["export_id"]).wait_for_ready()
+feed.export(receipt["export_id"]).download_to("creators.jsonl.gz")
+
+with gzip.open("creators.jsonl.gz", "rt") as fh:        # the file IS gzipped
+    creators = [json.loads(line) for line in fh]
+```
+
+`download_to()` writes the bytes verbatim and they are gzip — the server stores every
+export as `<id>.<format>.gz` and sends no `Content-Encoding`, so nothing inflates it for you.
+
+**One call is one batch, not the whole pool.** The server sizes the purchase as
+`min(config.batch_size, daily quota left, rows available)` and reports it as
+`quote()["items"]["new"]`, so draining a pool takes repeated calls — each with its own
+idempotency key. Raise `config.batch_size` to buy more per call.
+
+```python
+while feed.quote()["items"]["new"]:             # drive the loop off the quote
+    feed.download(idempotency_key=uuid.uuid4().hex)
+```
+
+`download()` always sends an `Idempotency-Key` — the API rejects a request without one — and
+reuses that key for its single automatic `quote_stale` retry, so a retried purchase cannot buy
+twice.
+
+### Surviving a restart: the key AND its ceiling
+
+The generated key dies with your process, so pass your own if the purchase must survive a
+restart. **The key on its own is not enough.** The server fingerprints it together with
+`expected_items`, and `download()` re-quotes that ceiling on every call — so once the first
+purchase has landed, `items.new` is `0`, and a bare same-key retry arrives as
+`expected_items: 0`, which reads as a *different* purchase and is refused
+`400 idempotency_key_reused`.
+
+Record both, and replay both:
+
+```python
+import uuid
+
+key = uuid.uuid4().hex                 # one key per purchase — see below
+ceiling = feed.quote()["items"]["new"]
+persist(key, ceiling)                  # BEFORE the call, so a crash mid-purchase is recoverable
+
+receipt = feed.download(idempotency_key=key, expected_items=ceiling)
+```
+
+```python
+key, ceiling = load()                  # after the restart
+receipt = feed.download(idempotency_key=key, expected_items=ceiling)
+```
+
+That returns the original receipt verbatim and bills nothing further. `download()` raises with
+the re-quoted ceiling named in the message if you replay a key without its `expected_items`.
+
+**Use a uuid per purchase, not a naming scheme.** Keys are scoped `(dataset, key)` per
+*organization*, so two of your services sharing a scheme like `nightly-<date>` will replay each
+other's receipts and hand back an export the other one bought.
+
+### After a failure
+
+| After | Key |
+|---|---|
+| Network error, timeout, any 5xx, `409 download_in_progress` | **Reuse the same key**, with the same `expected_items` — money may have moved, and only that pair replays the receipt |
+| A 4xx refusal *before* any purchase landed | A fresh key is safe — nothing was billed |
+
+`400 idempotency_key_reused` is **not** "try again", and is **not** a reason to mint a fresh key
+— a fresh key buys the export a second time and abandons the one already paid for. It means the
+key was sent with a different `expected_items` or `format` than the purchase it belongs to;
+replay it with the original ceiling. It also fires while the first request is still in flight.
+
+`billed_items` can come back smaller than the ceiling — `constraints` names the limit that bound
+it. But a download with **nothing left to buy is refused, not answered with a free receipt**: a
+drained pool is `409 pool_empty` and an exhausted daily quota `409 quota_exhausted`, both
+carrying the fresh `quote` and both billing nothing. Drive a drain loop off
+`quote()["items"]["new"]`, never off a zero receipt. (An *upload* dataset with nothing new does
+answer `billed_items: 0` at `"0.0000"` — a successful free download, not a failure.)
+
+`feed.quote()` tells you what it would cost, for free. `expected_items` is a ceiling, not an
+equality: a claim larger than it is refused, a smaller one proceeds and says `fewer_than_quoted`
+in `constraints`.
+
+A built export lives 4 days. Treat `expires_at` as authoritative rather than `status` — nothing
+marks an aged export expired, so a stale `ready` one signs a dead link. `retry()` rebuilds a
+failed or expired export for free; a plain re-`download()` would be a new purchase.
+
+### Money is strings
+
+`price_per_1000`, `amount`, `balance`, `billed_amount` and `price_per_1000_at_open` come back as
+quantized decimal strings and are returned **verbatim**. Do not `float()` them: you reconcile
+them against the credit ledger, and a float round-trip is how a sub-cent charge stops matching.
+(This is deliberately the opposite call from `usageTotalUsd`, which is a float.)
+
+### Your owned index
+
+A pool-backed dataset only delivers creators you do not already have, which it works out from an
+index you upload.
+
+```python
+feed.upload_owned_index("index_handles.txt")     # presigned PUT, then queues the load
+feed.get()["owned_index"]["latest_load"]         # the only place the outcome shows up
+```
+
+A refused load **replaces the live index anyway** — `index_missing`, `index_too_small`,
+`index_skip_rate` and `index_shrunk` all mean the same thing: re-upload.
+
+### Pace
+
+```python
+feed.update_config(daily_quota=2500, batch_size=1000)
+```
+
+Only those two are writable. `band`, `ack_ttl_hours` and `is_active` are read-only and the server
+drops them silently, so passing one raises `ValidationError` here rather than answering 200
+having changed nothing.
+
+`feed.get()` returns the overview — config, pool depth, quota, open batch, quote. It is **not a
+free status poll**: the server settles a batch that is due on the way past, which can move money.
+
 ## Webhook Handling
 
 ### Verifying Webhook Signatures
@@ -359,6 +541,36 @@ except GoFetchError as e:
 if run["status"] != "SUCCEEDED":
     print("Job did not succeed:", run["_gofetch_job"].get("error_message"))
 ```
+
+### Dataset errors
+
+Three `APIError` subclasses carry the structured data the datasets API sends with a refusal, so
+`except APIError` still catches all of them.
+
+```python
+from gofetch import BatchExpiredError, DatasetConflictError, InsufficientCreditsError
+
+try:
+    receipt = feed.download()
+
+except InsufficientCreditsError as e:          # 402 — nothing was billed
+    print(e.constraints)                       # [{"code": "insufficient_credits", "message": …}]
+
+except DatasetConflictError as e:              # 409
+    if e.code == "dataset_paused":
+        ...                                    # un-pause, then retry under the same key
+    elif e.code == "download_in_progress":
+        ...                                    # do NOT retry: the purchase may have landed
+
+except BatchExpiredError:                      # 410 on rows() — nothing was billed
+    ...                                        # pull again
+```
+
+`e.code` is the API's `errors.code`, and is `None` on the 409s that do not send one — branch on
+the status first and treat the code as enrichment. `e.quote` carries the fresh quote on
+`quote_stale`; it is deliberately absent on `download_in_progress`, `ledger_conflict`,
+`idempotency_key_reused` and `unsupported_format`, so never assume it is there. `e.details`
+carries `constraints`, `quote` and `supported_formats` when the response had them.
 
 ## Development
 

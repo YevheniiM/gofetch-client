@@ -4,8 +4,27 @@ from __future__ import annotations
 
 import warnings
 
-from gofetch import JobStatus, ListPage, RunStatus, ScraperType
-from gofetch.types import ACTOR_URL_MAPPING, resolve_actor_url
+from gofetch import (
+    BatchState,
+    DatasetKind,
+    ExportStatus,
+    JobStatus,
+    ListPage,
+    PullStatus,
+    QuoteKind,
+    RunStatus,
+    ScraperType,
+)
+from gofetch.types import (
+    ACTOR_URL_MAPPING,
+    DatasetBatch,
+    DatasetDownloadAccepted,
+    DatasetExportRow,
+    DatasetListRow,
+    DatasetOverview,
+    DatasetQuote,
+    resolve_actor_url,
+)
 
 
 class TestScraperType:
@@ -149,3 +168,86 @@ class TestListPage:
     def test_total_defaults_to_count(self) -> None:
         page = ListPage([{"a": 1}])
         assert page.total == 1
+
+
+class TestDatasetTypes:
+    """The enums and the documentation models, against real dev payloads."""
+
+    def test_pull_statuses(self) -> None:
+        assert PullStatus.OK == "ok"
+        assert PullStatus.OPEN_BATCH_EXISTS == "open_batch_exists"
+        assert PullStatus.QUOTA_EXHAUSTED == "quota_exhausted"
+        assert PullStatus.NOTHING_AVAILABLE == "nothing_available"
+        assert PullStatus.UNAVAILABLE == "unavailable"
+
+    def test_other_enums(self) -> None:
+        assert BatchState.ACKED == "acked"
+        assert ExportStatus.READY == "ready"
+        assert DatasetKind.POOL == "pool"
+        assert QuoteKind.MOVING == "moving"
+
+    def test_list_row_model(self) -> None:
+        from tests.test_datasets import MOCK_LIST_ROW
+
+        row = DatasetListRow(**MOCK_LIST_ROW)
+        assert row.slug == "creator-feed"
+        assert row.is_active is False
+        assert row.price_per_1000 == "15.0000"
+
+    def test_overview_model_is_a_different_shape_from_the_list_row(self) -> None:
+        from tests.test_datasets import MOCK_OVERVIEW
+
+        overview = DatasetOverview(**MOCK_OVERVIEW)
+        assert overview.max_batch_size == 2500
+        assert overview.download is not None
+        assert overview.download.balance == "4690.3253"
+        assert not hasattr(overview, "kind")
+
+    def test_quote_model(self) -> None:
+        from tests.test_datasets import MOCK_QUOTE
+
+        quote = DatasetQuote(**MOCK_QUOTE)
+        assert quote.items["new"] == 1000
+        assert quote.quote_kind == "moving"
+
+    def test_batch_model(self) -> None:
+        from tests.test_datasets import MOCK_ACKED
+
+        batch = DatasetBatch(**MOCK_ACKED["batch"])
+        assert batch.billed_rows == 990
+        assert batch.billed_amount == "14.8500"
+
+    def test_accepted_and_export_models(self) -> None:
+        from tests.test_datasets import MOCK_ACCEPTED, MOCK_EXPORT_READY
+
+        accepted = DatasetDownloadAccepted(**MOCK_ACCEPTED)
+        assert accepted.billed_amount == "15.0000"
+        export = DatasetExportRow(**MOCK_EXPORT_READY)
+        assert export.status == "ready"
+        assert export.url is not None
+
+    def test_accepted_export_allows_a_zero_billed_purchase(self) -> None:
+        """The upload `nothing_new` path has no batch behind it."""
+        accepted = DatasetDownloadAccepted(
+            export_id="3f2b7c40-0000-4000-8000-000000000002",
+            status="pending",
+            format="jsonl",
+            batch_id=None,
+            billed_items=0,
+            billed_amount="0.0000",
+            constraints=[{"code": "nothing_new", "message": "Nothing new to buy."}],
+        )
+        assert accepted.billed_items == 0
+        assert accepted.billed_amount == "0.0000"
+        assert accepted.batch_id is None
+
+    def test_money_is_typed_str_not_float(self) -> None:
+        """A float round-trip is how a sub-cent charge stops matching the ledger."""
+        for model, field in (
+            (DatasetListRow, "price_per_1000"),
+            (DatasetQuote, "amount"),
+            (DatasetQuote, "balance"),
+            (DatasetBatch, "price_per_1000_at_open"),
+            (DatasetDownloadAccepted, "billed_amount"),
+        ):
+            assert model.model_fields[field].annotation is str, f"{model.__name__}.{field}"

@@ -14,6 +14,10 @@ POLL_BACKOFF_FACTOR = 1.5
 # Pagination
 DEFAULT_PAGE_SIZE = 100
 MAX_PAGE_SIZE = 1000
+# The datasets API silently clamps a larger limit to its own max rather than
+# rejecting it, so the client clamps too: a caller who asks for 500 should not
+# believe they got 500.
+DATASET_MAX_PAGE_SIZE = 100
 
 # Retry configuration
 DEFAULT_MAX_RETRIES = 3
@@ -23,6 +27,7 @@ RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
 # API Headers
 API_KEY_HEADER = "X-API-Key"
+IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
 WEBHOOK_SIGNATURE_HEADER = "X-Webhook-Signature"
 
 # Webhook event types (matching Apify format)

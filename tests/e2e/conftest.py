@@ -39,6 +39,8 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line("markers", "webhook: tests requiring ngrok webhook tunnel")
     config.addinivalue_line("markers", "slow: long-running tests (tier >= 500)")
     config.addinivalue_line("markers", "batch: batch multi-URL tests (25 URLs per call)")
+    config.addinivalue_line("markers", "datasets: Datasets product E2E "
+                            "(pull/ack/export/download — moves credits)")
 
 
 # ---------------------------------------------------------------------------

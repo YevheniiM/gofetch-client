@@ -95,6 +95,96 @@ class RateLimitError(APIError):
         return base
 
 
+class InsufficientCreditsError(APIError):
+    """
+    Raised when the organization cannot afford the request (402).
+
+    Attributes:
+        constraints: The API's ``[{"code", "message"}]`` explanation of the
+            refusal — for a dataset purchase it names the amount and the
+            balance. Nothing was billed.
+    """
+
+    def __init__(
+        self,
+        message: str = "Insufficient credits.",
+        constraints: list[dict[str, Any]] | None = None,
+        error_code: str | None = "insufficient_credits",
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message, status_code=402, error_code=error_code, details=details)
+        self.constraints = constraints or []
+
+
+class BatchExpiredError(APIError):
+    """
+    Raised when a dataset batch expired before it was acked (410).
+
+    The batch's rows went back to the supply pool and **nothing was billed** —
+    an expired batch costs data latency, not money. Recover by pulling again;
+    the rows will be re-offered on a later pull.
+    """
+
+    def __init__(
+        self,
+        message: str = "Batch expired.",
+        error_code: str | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message, status_code=410, error_code=error_code, details=details)
+
+
+class DatasetConflictError(APIError):
+    """
+    Raised when a dataset request conflicts with the dataset's state (409).
+
+    Attributes:
+        code: The machine-readable ``errors.code``, when the API sent one. Not
+            every 409 carries one, so branch on this only as enrichment.
+        quote: The fresh quote that rides along with ``quote_stale``. ``None``
+            on ``download_in_progress`` and ``ledger_conflict``, which omit it
+            deliberately — a quote is what a caller retries *with*, and
+            ``download_in_progress`` exists to say "do not retry, your purchase
+            may already have happened". Never assume it is present.
+
+    Which codes are recoverable:
+
+    - ``quote_stale`` — retry once with ``quote["items"]["new"]`` and the SAME
+      idempotency key; a refusal releases the key, so nothing was billed.
+      ``download()`` already does this for you.
+    - ``ledger_conflict`` — retryable: pull again, the next one succeeds.
+    - ``pool_empty`` / ``quota_exhausted`` — nothing was billed and the request
+      was correct; there is simply nothing to sell right now. Retry later under
+      the same key, or read ``.quote`` for the current counts.
+    - ``dataset_paused`` — an operator retired the dataset. Un-pause it and
+      retry under the same key.
+    - ``open_batch_blocks_download`` — ack the open pull batch first, then retry.
+    - ``batch_not_acked`` — only an acked batch has rows to export.
+    - ``export_already_ready`` — the file is built; download it instead.
+    - ``download_in_progress`` — do NOT retry automatically, and do NOT mint a
+      new key: money may already have moved, and only the original key replays
+      that receipt. Read the export list to find out whether the purchase
+      landed.
+    - ``reservation_divergence`` — not retryable. The database was edited under
+      a live batch; contact support.
+    """
+
+    def __init__(
+        self,
+        message: str = "Dataset conflict.",
+        error_code: str | None = None,
+        quote: dict[str, Any] | None = None,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message, status_code=409, error_code=error_code, details=details)
+        self.quote = quote
+
+    @property
+    def code(self) -> str | None:
+        """Alias for ``error_code`` — the API calls this field ``errors.code``."""
+        return self.error_code
+
+
 class JobError(GoFetchError):
     """
     Raised when a job fails or encounters an error.

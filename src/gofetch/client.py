@@ -12,6 +12,12 @@ from typing import NoReturn
 from gofetch.actor import ActorClient, AsyncActorClient
 from gofetch.constants import DEFAULT_BASE_URL, DEFAULT_TIMEOUT
 from gofetch.dataset import AsyncDatasetClient, DatasetClient
+from gofetch.datasets import (
+    AsyncDatasetCollectionClient,
+    AsyncDatasetFeedClient,
+    DatasetCollectionClient,
+    DatasetFeedClient,
+)
 from gofetch.http import AsyncHTTPClient, HTTPClient
 from gofetch.run import AsyncRunClient, RunClient
 from gofetch.types import resolve_actor_url
@@ -163,6 +169,31 @@ class GoFetchClient:
             job_id=dataset_id,
         )
 
+    def datasets(self) -> DatasetCollectionClient:
+        """Get the Datasets collection client — the Datasets *product*.
+
+        Not ``client.dataset(job_id)``, which fetches one scraper job's results:
+        these are the subscription datasets you pull rows from and pay for.
+
+        Example:
+            for row in client.datasets().iterate():
+                print(row["slug"], row["items"]["undelivered"])
+        """
+        return DatasetCollectionClient(http=self._http)
+
+    def dataset_feed(self, slug: str) -> DatasetFeedClient:
+        """Get the client for one Datasets-product dataset, by slug.
+
+        Not ``client.dataset(job_id)``, which fetches one scraper job's results:
+        this is a subscription dataset you pull rows from and pay for.
+
+        Example:
+            feed = client.dataset_feed("creator-feed")
+            for row in feed.pull_and_iterate():
+                store(row)
+        """
+        return DatasetFeedClient(http=self._http, slug=slug)
+
     def run(self, run_id: str) -> RunClient:
         """Get a run client for a specific job."""
         return RunClient(http=self._http, run_id=run_id)
@@ -279,6 +310,22 @@ class AsyncGoFetchClient:
             http=self._http,
             job_id=dataset_id,
         )
+
+    def datasets(self) -> AsyncDatasetCollectionClient:
+        """Get the async Datasets collection client — the Datasets *product*.
+
+        Not ``client.dataset(job_id)``, which fetches one scraper job's results:
+        these are the subscription datasets you pull rows from and pay for.
+        """
+        return AsyncDatasetCollectionClient(http=self._http)
+
+    def dataset_feed(self, slug: str) -> AsyncDatasetFeedClient:
+        """Get the async client for one Datasets-product dataset, by slug.
+
+        Not ``client.dataset(job_id)``, which fetches one scraper job's results:
+        this is a subscription dataset you pull rows from and pay for.
+        """
+        return AsyncDatasetFeedClient(http=self._http, slug=slug)
 
     def run(self, run_id: str) -> AsyncRunClient:
         """Get an async run client for a specific job."""

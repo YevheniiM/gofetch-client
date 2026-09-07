@@ -4,9 +4,15 @@ from __future__ import annotations
 
 import pytest
 
-from gofetch import ApifyClient, GoFetchClient
+from gofetch import ApifyClient, AsyncGoFetchClient, GoFetchClient
 from gofetch.actor import ActorClient
-from gofetch.dataset import DatasetClient
+from gofetch.dataset import AsyncDatasetClient, DatasetClient
+from gofetch.datasets import (
+    AsyncDatasetCollectionClient,
+    AsyncDatasetFeedClient,
+    DatasetCollectionClient,
+    DatasetFeedClient,
+)
 
 
 class TestGoFetchClient:
@@ -72,6 +78,31 @@ class TestGoFetchClient:
         dataset = client.dataset("job123")
         assert isinstance(dataset, DatasetClient)
         client.close()
+
+    def test_datasets_returns_the_collection_client(self) -> None:
+        client = GoFetchClient(api_key="test")
+        assert isinstance(client.datasets(), DatasetCollectionClient)
+        client.close()
+
+    def test_dataset_feed_returns_the_feed_client(self) -> None:
+        client = GoFetchClient(api_key="test")
+        feed = client.dataset_feed("creator-feed")
+        assert isinstance(feed, DatasetFeedClient)
+        assert feed._slug == "creator-feed"
+        client.close()
+
+    def test_dataset_still_means_job_results(self) -> None:
+        """`dataset(job_id)` is the Apify-compatible results client, unchanged."""
+        client = GoFetchClient(api_key="test")
+        assert isinstance(client.dataset("job123"), DatasetClient)
+        assert not isinstance(client.dataset("job123"), DatasetFeedClient)
+        client.close()
+
+    def test_async_dataset_factories(self) -> None:
+        client = AsyncGoFetchClient(api_key="test")
+        assert isinstance(client.datasets(), AsyncDatasetCollectionClient)
+        assert isinstance(client.dataset_feed("creator-feed"), AsyncDatasetFeedClient)
+        assert isinstance(client.dataset("job123"), AsyncDatasetClient)
 
     def test_context_manager(self) -> None:
         with GoFetchClient(api_key="test") as client:
