@@ -494,17 +494,43 @@ def webhook_handler(request):
 
 ### Transforming Webhook Payloads
 
+For job events (`job.completed`, `job.failed`, `job.timed_out`, `job.cancelled`) the body is
+Apify-compatible; the event name is in the `X-Event-Type` header and the delivery id in
+`X-Delivery-ID`:
+
+```json
+{
+  "resource": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "status": "SUCCEEDED",
+    "defaultDatasetId": "550e8400-e29b-41d4-a716-446655440000",
+    "usageTotalUsd": 0.8883
+  }
+}
+```
+
+`status` is one of `SUCCEEDED`, `FAILED`, `TIMED-OUT`, `ABORTED`. `usageTotalUsd` is what the job
+was charged in USD (the job's `actual_cost`). `job.failed`, `job.timed_out` and `job.cancelled`
+report `0`: those outcomes charge nothing. A timed-out job whose results arrive late is charged
+then, and sends `job.completed` with that charge. Redeliveries resend the body as originally
+recorded, so events from before this field existed replay without it (`usageTotalUsd` reads
+`None`).
+
 ```python
 from gofetch import transform_webhook_payload
 
 def webhook_handler(request):
     gofetch_payload = json.loads(request.body)
 
-    # Transform to Apify-compatible format
-    apify_payload = transform_webhook_payload(gofetch_payload)
+    # Transform to Apify-compatible format; without the header the event is
+    # derived from resource.status
+    apify_payload = transform_webhook_payload(
+        gofetch_payload, event_type=request.headers.get("X-Event-Type")
+    )
 
     if apify_payload["eventType"] == "ACTOR.RUN.SUCCEEDED":
         dataset_id = apify_payload["resource"]["defaultDatasetId"]
+        cost = apify_payload["resource"]["usageTotalUsd"]  # None if the body predates the field
         # Fetch results...
 ```
 

@@ -113,14 +113,27 @@ def verify_webhook_signature(
     return hmac.compare_digest(signature, expected)
 
 
-def transform_webhook_payload(gofetch_payload: dict[str, Any]) -> dict[str, Any]:
+def transform_webhook_payload(
+    gofetch_payload: dict[str, Any],
+    event_type: str | None = None,
+) -> dict[str, Any]:
     """
     Transform GoFetch webhook payload to Apify-compatible format.
 
     Use this function to maintain compatibility with code expecting
     Apify webhook payloads.
 
-    GoFetch format:
+    GoFetch format (what the API sends):
+        {
+            "resource": {
+                "id": "...",
+                "status": "SUCCEEDED",
+                "defaultDatasetId": "...",
+                "usageTotalUsd": 0.42  # absent from older servers
+            }
+        }
+
+    Legacy format (still accepted):
         {
             "event": "job.completed",
             "timestamp": "2024-01-01T00:00:00Z",
@@ -146,7 +159,8 @@ def transform_webhook_payload(gofetch_payload: dict[str, Any]) -> dict[str, Any]
                 "id": "...",
                 "actId": "instagram",
                 "status": "SUCCEEDED",
-                "defaultDatasetId": "..."
+                "defaultDatasetId": "...",
+                "usageTotalUsd": 0.42  # None when the server did not send it
             },
             "defaultDatasetId": "...",
             "_gofetch_payload": {...}  # Original payload
@@ -154,6 +168,9 @@ def transform_webhook_payload(gofetch_payload: dict[str, Any]) -> dict[str, Any]
 
     Args:
         gofetch_payload: Raw webhook payload from GoFetch
+        event_type: X-Event-Type header value (e.g. "job.completed"). The
+            body carries no event, so without it the event is derived from
+            ``resource.status``.
 
     Returns:
         Transformed payload in Apify format
@@ -161,47 +178,61 @@ def transform_webhook_payload(gofetch_payload: dict[str, Any]) -> dict[str, Any]
     Example:
         # In your webhook handler
         payload = json.loads(request.body)
-        apify_payload = transform_webhook_payload(payload)
+        apify_payload = transform_webhook_payload(
+            payload, request.headers.get("X-Event-Type")
+        )
 
         # Now you can use it with existing Apify-style processing
         if apify_payload["eventType"] == "ACTOR.RUN.SUCCEEDED":
             dataset_id = apify_payload["resource"]["defaultDatasetId"]
+            cost = apify_payload["resource"]["usageTotalUsd"]
             # Fetch results...
     """
-    event = gofetch_payload.get("event", "")
+    # Deferred: gofetch.actor imports this module.
+    from gofetch.actor import _usd
+
     data = gofetch_payload.get("data", {})
-
-    # Map event type
-    apify_event = GOFETCH_TO_APIFY_EVENTS.get(event, event)
-
-    # Map status
-    status_map = {
-        "pending": "READY",
-        "running": "RUNNING",
-        "completed": "SUCCEEDED",
-        "failed": "FAILED",
-        "timed_out": "TIMED-OUT",
-        "cancelled": "ABORTED",
-    }
-    status = status_map.get(data.get("status", ""), data.get("status", "RUNNING"))
+    resource = gofetch_payload.get("resource")
+    if isinstance(resource, dict):
+        # The status is already Apify's; the body has no actor or timings.
+        job_id = resource.get("id")
+        status = resource.get("status") or "RUNNING"
+        event = event_type or "ACTOR.RUN." + status.replace("-", "_")
+        dataset_id = resource.get("defaultDatasetId") or job_id
+        usage_total_usd = _usd(resource.get("usageTotalUsd"))
+    else:
+        status_map = {
+            "pending": "READY",
+            "running": "RUNNING",
+            "completed": "SUCCEEDED",
+            "failed": "FAILED",
+            "timed_out": "TIMED-OUT",
+            "cancelled": "ABORTED",
+        }
+        job_id = data.get("job_id")
+        status = status_map.get(data.get("status", ""), data.get("status", "RUNNING"))
+        event = event_type or gofetch_payload.get("event", "")
+        dataset_id = job_id
+        usage_total_usd = None
 
     return {
         "userId": "gofetch",
-        "eventType": apify_event,
+        "eventType": GOFETCH_TO_APIFY_EVENTS.get(event, event),
         "eventData": {
             "actorId": data.get("scraper_type"),
-            "actorRunId": data.get("job_id"),
+            "actorRunId": job_id,
         },
         "resource": {
-            "id": data.get("job_id"),
+            "id": job_id,
             "actId": data.get("scraper_type"),
             "userId": "gofetch",
             "status": status,
-            "defaultDatasetId": data.get("job_id"),
+            "defaultDatasetId": dataset_id,
             "startedAt": data.get("started_at"),
             "finishedAt": data.get("completed_at"),
+            "usageTotalUsd": usage_total_usd,
         },
-        "defaultDatasetId": data.get("job_id"),
+        "defaultDatasetId": dataset_id,
         # Keep original payload for reference
         "_gofetch_payload": gofetch_payload,
     }

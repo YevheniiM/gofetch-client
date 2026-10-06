@@ -69,6 +69,54 @@ class TestTransformWebhookPayload:
         result = transform_webhook_payload(mock_webhook_payload)
         assert result["userId"] == "gofetch"
 
+    def test_legacy_payload_has_no_usage(self, mock_webhook_payload: dict) -> None:
+        assert transform_webhook_payload(mock_webhook_payload)["resource"]["usageTotalUsd"] is None
+
+
+class TestTransformResourcePayload:
+    """The body the API actually sends: {"resource": {...}}, event in X-Event-Type."""
+
+    JOB_ID = "550e8400-e29b-41d4-a716-446655440000"
+
+    def _body(self, status: str, **extra: object) -> dict:
+        return {"resource": {"id": self.JOB_ID, "status": status, "defaultDatasetId": self.JOB_ID, **extra}}
+
+    def test_succeeded_with_cost(self) -> None:
+        result = transform_webhook_payload(self._body("SUCCEEDED", usageTotalUsd=0.42))
+        assert result["eventType"] == "ACTOR.RUN.SUCCEEDED"
+        assert result["resource"]["id"] == self.JOB_ID
+        assert result["resource"]["status"] == "SUCCEEDED"
+        assert result["resource"]["defaultDatasetId"] == self.JOB_ID
+        assert result["defaultDatasetId"] == self.JOB_ID
+        assert result["eventData"]["actorRunId"] == self.JOB_ID
+        assert result["resource"]["usageTotalUsd"] == 0.42
+
+    def test_older_server_without_cost_is_none(self) -> None:
+        result = transform_webhook_payload(self._body("SUCCEEDED"))
+        assert result["resource"]["usageTotalUsd"] is None
+        assert result["eventType"] == "ACTOR.RUN.SUCCEEDED"
+
+    def test_failed_reports_zero_not_none(self) -> None:
+        result = transform_webhook_payload(self._body("FAILED", usageTotalUsd=0.0))
+        assert result["eventType"] == "ACTOR.RUN.FAILED"
+        assert result["resource"]["status"] == "FAILED"
+        assert result["resource"]["usageTotalUsd"] == 0.0
+        assert result["resource"]["usageTotalUsd"] is not None
+
+    @pytest.mark.parametrize("status,event", [("TIMED-OUT", "ACTOR.RUN.TIMED_OUT"), ("ABORTED", "ACTOR.RUN.ABORTED")])
+    def test_event_derived_from_status(self, status: str, event: str) -> None:
+        assert transform_webhook_payload(self._body(status, usageTotalUsd=0.0))["eventType"] == event
+
+    def test_event_type_header_wins(self) -> None:
+        result = transform_webhook_payload(self._body("SUCCEEDED", usageTotalUsd=0.42), event_type="job.completed")
+        assert result["eventType"] == "ACTOR.RUN.SUCCEEDED"
+        result = transform_webhook_payload(self._body("FAILED"), "job.timed_out")
+        assert result["eventType"] == "ACTOR.RUN.TIMED_OUT"
+
+    def test_preserves_original_payload(self) -> None:
+        body = self._body("SUCCEEDED", usageTotalUsd=0.42)
+        assert transform_webhook_payload(body)["_gofetch_payload"] == body
+
 
 class TestGenerateWebhookConfig:
 
