@@ -494,8 +494,9 @@ def webhook_handler(request):
 
 ### Transforming Webhook Payloads
 
-The body is Apify-compatible; the event name (e.g. `job.completed`) is in the `X-Event-Type`
-header and the delivery id in `X-Delivery-ID`:
+For job events (`job.completed`, `job.failed`, `job.timed_out`, `job.cancelled`) the body is
+Apify-compatible; the event name is in the `X-Event-Type` header and the delivery id in
+`X-Delivery-ID`:
 
 ```json
 {
@@ -509,8 +510,11 @@ header and the delivery id in `X-Delivery-ID`:
 ```
 
 `status` is one of `SUCCEEDED`, `FAILED`, `TIMED-OUT`, `ABORTED`. `usageTotalUsd` is what the job
-was charged in USD (the job's `actual_cost`); failed, timed-out and aborted jobs are not charged
-and report `0`. Older servers do not send it, and it then reads `None`.
+was charged in USD (the job's `actual_cost`). `job.failed`, `job.timed_out` and `job.cancelled`
+report `0`: those outcomes charge nothing. A timed-out job whose results arrive late is charged
+then, and sends `job.completed` with that charge. Redeliveries resend the body as originally
+recorded, so events from before this field existed replay without it (`usageTotalUsd` reads
+`None`).
 
 ```python
 from gofetch import transform_webhook_payload
@@ -526,7 +530,7 @@ def webhook_handler(request):
 
     if apify_payload["eventType"] == "ACTOR.RUN.SUCCEEDED":
         dataset_id = apify_payload["resource"]["defaultDatasetId"]
-        cost = apify_payload["resource"]["usageTotalUsd"]  # None from an older server
+        cost = apify_payload["resource"]["usageTotalUsd"]  # None if the body predates the field
         # Fetch results...
 ```
 

@@ -12,8 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - `transform_webhook_payload()` passes the job's settled charge through as
-  `resource.usageTotalUsd` (float; `0.0` for a failed, timed-out or aborted job; `None` from a
-  server that does not send it yet).
+  `resource.usageTotalUsd` (float; `0.0` on `job.failed`, `job.timed_out` and `job.cancelled`;
+  `None` when the body has no such field, e.g. from an older server or a redelivered older event).
 - `transform_webhook_payload(payload, event_type=None)` takes the `X-Event-Type` header value.
   Without it the event type is derived from `resource.status`.
 
