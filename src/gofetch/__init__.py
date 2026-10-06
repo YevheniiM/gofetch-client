@@ -75,7 +75,7 @@ from gofetch.webhook_client import (
 # Apify compatibility alias
 ApifyClient = GoFetchClient
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 __all__ = [
     "APIError",

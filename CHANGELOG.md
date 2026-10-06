@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-06
+
+### Added
+
+- `transform_webhook_payload()` passes the job's settled charge through as
+  `resource.usageTotalUsd` (float; `0.0` for a failed, timed-out or aborted job; `None` from a
+  server that does not send it yet).
+- `transform_webhook_payload(payload, event_type=None)` takes the `X-Event-Type` header value.
+  Without it the event type is derived from `resource.status`.
+
+### Fixed
+
+- `transform_webhook_payload()` read a `{"event", "data"}` body the API has never sent. Given
+  the real `{"resource": {...}}` body it returned `resource.id = None`, `status = "RUNNING"` and
+  an empty `eventType`. It now reads the real body; the old shape is still accepted.
+
 ## [0.7.0] - 2026-09-07
 
 ### Added

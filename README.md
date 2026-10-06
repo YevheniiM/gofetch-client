@@ -494,17 +494,31 @@ def webhook_handler(request):
 
 ### Transforming Webhook Payloads
 
+The body is signed exactly as sent, and the event travels in the `X-Event-Type` header
+(`job.completed`, `job.failed`, `job.timed_out`, `job.cancelled`), not in the body:
+
+```json
+{"resource": {"defaultDatasetId": "<job id>", "id": "<job id>", "status": "SUCCEEDED", "usageTotalUsd": 0.42}}
+```
+
+`usageTotalUsd` is the settled charge for the job, as a float — `0.0` for a failed, timed-out
+or aborted job, which is never billed. Older servers do not send it; it then reads `None`.
+
 ```python
 from gofetch import transform_webhook_payload
 
 def webhook_handler(request):
     gofetch_payload = json.loads(request.body)
 
-    # Transform to Apify-compatible format
-    apify_payload = transform_webhook_payload(gofetch_payload)
+    # Transform to Apify-compatible format; without the header the event is
+    # derived from resource.status
+    apify_payload = transform_webhook_payload(
+        gofetch_payload, request.headers.get("X-Event-Type")
+    )
 
     if apify_payload["eventType"] == "ACTOR.RUN.SUCCEEDED":
         dataset_id = apify_payload["resource"]["defaultDatasetId"]
+        cost = apify_payload["resource"]["usageTotalUsd"]  # None from an older server
         # Fetch results...
 ```
 
